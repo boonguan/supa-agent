@@ -16,12 +16,15 @@
 
 ### 1. 安装
 
-需要 Python 3.8+。项目零依赖,克隆即可用:
+需要 Python 3.8+。项目零依赖,安装只需一条命令:
 
 ```bash
 git clone git@github.com:boonguan/supa-agent.git
 cd supa-agent
+python3 -m pip install -e .   # Ubuntu/Debian 需要加 --user --break-system-packages
 ```
+
+装完直接使用 `supa` 命令 (也可以不安装,用 `python3 main.py` 代替)。
 
 ### 2. 配置 API key
 
@@ -45,7 +48,7 @@ set -a && source .env && set +a
 **交互模式** (推荐, 像 Claude Code 一样连续对话):
 
 ```bash
-python3 main.py -d /path/to/your/project
+supa -d /path/to/your/project
 ```
 
 ```
@@ -58,7 +61,7 @@ supa-agent 交互模式, 当前目录: /path/to/your/project
 **一次性任务模式** (适合脚本调用 / CI):
 
 ```bash
-python3 main.py "看看当前目录有什么文件, 然后写一个 hello.py 并运行它" -d /tmp/demo
+supa "看看当前目录有什么文件, 然后写一个 hello.py 并运行它" -d /tmp/demo
 ```
 
 ### 4. 斜杠命令
