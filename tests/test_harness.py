@@ -104,6 +104,24 @@ def test_subagent(tmp):
     assert all(t.name != "task" for t in sub.tools)
 
 
+def test_effort_per_model():
+    from harness.llm import LLM, supported_efforts
+
+    assert supported_efforts("deepseek-max") == ("low", "medium", "high", "max")
+    assert supported_efforts("deepseek-v4-flash") == ("low", "medium", "high")
+    assert supported_efforts("qwen2.5-coder") == ()
+
+    llm = LLM.__new__(LLM)  # 跳过 __init__ 的 api_key 检查
+    llm.model, llm.effort = "deepseek-v4-flash", "max"
+    assert llm.effective_effort() == "high"  # 超上限降级
+    assert llm._payload([])["reasoning_effort"] == "high"
+    llm.model = "qwen2.5-coder"
+    assert llm.effective_effort() is None
+    assert "reasoning_effort" not in llm._payload([])  # 不支持的模型不发参数
+    llm.model, llm.effort = "deepseek-max", "max"
+    assert llm._payload([], stream=True) == {"model": "deepseek-max", "messages": [], "stream": True, "reasoning_effort": "max"}
+
+
 def test_tui():
     try:
         from prompt_toolkit.input import create_pipe_input
@@ -117,8 +135,12 @@ def test_tui():
         cwd = "/tmp"
 
         class llm:
-            model = "m"
+            model = "deepseek-v4-flash"
             effort = "medium"
+
+            @staticmethod
+            def effective_effort():
+                return "medium"
 
     with create_pipe_input() as pipe:
         session = create_session(input=pipe, output=DummyOutput())
@@ -130,6 +152,7 @@ def test_tui():
 
 def main():
     test_tool_registry()
+    test_effort_per_model()
     test_tui()
     for fn in (test_memory_and_skills, test_agent_loop_with_tools, test_edit_file_guards, test_subagent):
         with tempfile.TemporaryDirectory() as tmp:

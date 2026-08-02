@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from harness.agent import Agent
 from harness.context import discover_skills, load_memory
-from harness.llm import LLM, LLMError, SUPPORTED_MODELS
+from harness.llm import LLM, LLMError, SUPPORTED_MODELS, supported_efforts
 from harness.ui import C, print_todos
 
 try:
@@ -29,8 +29,6 @@ HELP = """命令:
   /help             显示帮助
 其余输入都会作为任务发给 agent"""
 
-VALID_EFFORTS = ("low", "medium", "high", "max")
-
 
 def handle_command(agent, line):
     if line in ("/exit", "/quit", "/q"):
@@ -47,19 +45,26 @@ def handle_command(agent, line):
                 print(f"{C.YELLOW}提示: DeepSeek 支持 {', '.join(SUPPORTED_MODELS)}, 你设置的是 {name}{C.RESET}")
             agent.set_model(name)
             print(f"{C.GREEN}模型已切换: {name}{C.RESET}")
+            effective = agent.llm.effective_effort()
+            if effective and effective != agent.llm.effort:
+                print(f"{C.YELLOW}推理强度 {agent.llm.effort} 超出该模型上限, 实际使用 {effective}{C.RESET}")
+            elif not effective:
+                print(f"{C.DIM}该模型不支持调节推理强度, 将不发送 reasoning_effort{C.RESET}")
         else:
             print(f"当前模型: {agent.llm.model}")
     elif line == "/effort" or line.startswith("/effort "):
-        effort = line[7:].strip()
-        if effort:
-            effort = effort.lower()
-            if effort not in VALID_EFFORTS:
-                print(f"无效值: {effort} (可选: {', '.join(VALID_EFFORTS)})")
+        efforts = supported_efforts(agent.llm.model)
+        effort = line[7:].strip().lower()
+        if not efforts:
+            print(f"当前模型 {agent.llm.model} 不支持调节推理强度")
+        elif effort:
+            if effort not in efforts:
+                print(f"无效值: {effort} ({agent.llm.model} 可选: {', '.join(efforts)})")
             else:
                 agent.llm.effort = effort
                 print(f"{C.GREEN}推理强度已切换: {effort}{C.RESET}")
         else:
-            print(f"当前推理强度: {agent.llm.effort} (可选: {', '.join(VALID_EFFORTS)})")
+            print(f"当前推理强度: {agent.llm.effective_effort()} ({agent.llm.model} 可选: {', '.join(efforts)})")
     elif line.startswith("/cwd "):
         p = Path(line[5:].strip()).expanduser()
         if p.exists() and p.is_dir():
@@ -97,7 +102,8 @@ def _model_hint(error_text):
 
 
 def repl(agent):
-    print(f"{C.BOLD_CYAN}supa-agent{C.RESET}  ·  {C.GREEN}model: {agent.llm.model}{C.RESET}  ·  {C.YELLOW}effort: {agent.llm.effort}{C.RESET}  ·  {C.CYAN}cwd: {agent.cwd}{C.RESET}")
+    effort = agent.llm.effective_effort() or "不支持"
+    print(f"{C.BOLD_CYAN}supa-agent{C.RESET}  ·  {C.GREEN}model: {agent.llm.model}{C.RESET}  ·  {C.YELLOW}effort: {effort}{C.RESET}  ·  {C.CYAN}cwd: {agent.cwd}{C.RESET}")
     print("输入 / 查看可用命令")
     session = create_session() if TUI_AVAILABLE else None
     while True:
