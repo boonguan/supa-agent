@@ -6,6 +6,7 @@ from prompt_toolkit.styles import Style
 STYLE = Style.from_dict(
     {
         "prompt": "bold #67e8f9",
+        "buffer": "#7dd3fc",
         "model": "bold #86efac",
         "cwd": "#a5b4fc",
         "sep": "#6b7280",
@@ -43,6 +44,6 @@ def prompt_line(session, agent):
             ("class:model", f"model: {agent.llm.model}"),
             ("class:sep", "  ·  "),
             ("class:cwd", f"cwd: {agent.cwd}"),
-            ("class:sep", "  ·  Enter 发送 / Alt+Enter 换行"),
+            ("class:sep", "  ·  Enter 发送 / Alt+Enter 换行 · /model 切换模型"),
         ],
     )

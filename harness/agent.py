@@ -2,6 +2,7 @@ import json
 
 from .llm import LLM
 from .tools import TOOLS
+from .ui import C
 
 SYSTEM_PROMPT = """你是一个运行在用户 shell 里的 coding agent。
 你可以调用工具来查看、修改文件和执行命令。规则:
@@ -79,7 +80,7 @@ class Agent:
     def chat(self, task):
         self.messages.append({"role": "user", "content": task})
         for step in range(1, self.max_steps + 1):
-            print(f"\n--- step {step} ---")
+            print(f"\n{C.DIM}--- step {step} ---{C.RESET}")
             content, tool_calls = self._stream()
             if not tool_calls:
                 return content
@@ -96,7 +97,7 @@ class Agent:
                     args = json.loads(call["function"]["arguments"] or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                print(f"  {call['function']['name']}({json.dumps(args, ensure_ascii=False)[:200]})")
+                print(f"  {C.DIM}{call['function']['name']}({json.dumps(args, ensure_ascii=False)[:200]}){C.RESET}")
                 try:
                     result = fn(self.cwd, **args)
                 except Exception as e:
@@ -104,7 +105,7 @@ class Agent:
                 self.messages.append(
                     {"role": "tool", "tool_call_id": call["id"], "content": result}
                 )
-        print("已达到最大步数, 任务未完成")
+        print(f"{C.DIM}已达到最大步数, 任务未完成{C.RESET}")
         return ""
 
     def run(self, task):

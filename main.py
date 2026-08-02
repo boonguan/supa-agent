@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from harness.agent import Agent
 from harness.llm import LLM, LLMError
+from harness.ui import C
 
 try:
     from harness.tui import create_session, prompt_line
@@ -18,6 +19,7 @@ except ImportError:
 HELP = """命令:
   /exit             退出
   /reset            清空对话历史
+  /model [名称]     查看或切换模型 (如 /model deepseek-reasoner)
   /cwd <路径>       切换工作目录
   /help             显示帮助
 其余输入都会作为任务发给 agent"""
@@ -31,6 +33,13 @@ def handle_command(agent, line):
     elif line == "/reset":
         agent.reset()
         print("历史已清空")
+    elif line == "/model" or line.startswith("/model "):
+        name = line[6:].strip()
+        if name:
+            agent.llm.model = name
+            print(f"{C.GREEN}模型已切换: {name}{C.RESET}")
+        else:
+            print(f"当前模型: {agent.llm.model}")
     elif line.startswith("/cwd "):
         p = Path(line[5:].strip()).expanduser()
         if p.exists() and p.is_dir():
@@ -44,7 +53,7 @@ def handle_command(agent, line):
 
 
 def repl(agent):
-    print(f"supa-agent  ·  model: {agent.llm.model}  ·  cwd: {agent.cwd}")
+    print(f"{C.BOLD_CYAN}supa-agent{C.RESET}  ·  {C.GREEN}model: {agent.llm.model}{C.RESET}  ·  {C.CYAN}cwd: {agent.cwd}{C.RESET}")
     print(HELP)
     session = create_session() if TUI_AVAILABLE else None
     if TUI_AVAILABLE:
@@ -62,6 +71,8 @@ def repl(agent):
             continue
         handled = handle_command(agent, line)
         if handled is None:
+            print(f"\n{C.BOLD_CYAN}> {line}{C.RESET}")
+            print(f"{C.DIM}{'─' * 36}{C.RESET}")
             try:
                 agent.chat(line)
             except KeyboardInterrupt:
