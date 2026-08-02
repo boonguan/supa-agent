@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "supa-agent"
 version = "0.1.0"
-description = "Zero-dependency coding agent CLI"
+description = "supa-agent: a lightweight coding agent CLI. Give the LLM tools (bash/file read-write/grep), let it code autonomously in your terminal, Claude Code style. OpenAI-compatible APIs (DeepSeek/OpenAI/Ollama), interactive TUI with streaming output."
 requires-python = ">=3.8"
 dependencies = ["prompt_toolkit>=3.0"]
 
