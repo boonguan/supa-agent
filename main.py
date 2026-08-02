@@ -66,6 +66,15 @@ def handle_command(agent, line):
     return True
 
 
+def _model_hint(error_text):
+    import re
+
+    m = re.search(r"supported API model names are ([\w.-]+) or ([\w.-]+)", error_text)
+    if m:
+        return ", ".join(m.groups())
+    return None
+
+
 def repl(agent):
     print(f"{C.BOLD_CYAN}supa-agent{C.RESET}  ·  {C.GREEN}model: {agent.llm.model}{C.RESET}  ·  {C.YELLOW}effort: {agent.llm.effort}{C.RESET}  ·  {C.CYAN}cwd: {agent.cwd}{C.RESET}")
     print("输入 / 查看可用命令")
@@ -85,6 +94,12 @@ def repl(agent):
         if handled is None:
             try:
                 agent.chat(line)
+            except LLMError as e:
+                print(f"{C.YELLOW}错误: {e}{C.RESET}")
+                hint = _model_hint(str(e))
+                if hint:
+                    print(f"{C.DIM}可用模型: {hint}{C.RESET}")
+                print(f"{C.DIM}用 /model 查看或切换当前模型{C.RESET}")
             except KeyboardInterrupt:
                 print("\n(已中断)")
         elif not handled:
@@ -112,7 +127,14 @@ def main():
 
     agent = Agent(llm, cwd=str(Path(args.dir).resolve()))
     if args.task:
-        agent.run(" ".join(args.task))
+        try:
+            agent.run(" ".join(args.task))
+        except LLMError as e:
+            print(f"错误: {e}", file=sys.stderr)
+            hint = _model_hint(str(e))
+            if hint:
+                print(f"可用模型: {hint}", file=sys.stderr)
+            sys.exit(1)
     else:
         repl(agent)
 
