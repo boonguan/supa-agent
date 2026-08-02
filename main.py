@@ -20,12 +20,12 @@ HELP = """命令:
   /exit             退出
   /reset            清空对话历史
   /model [名称]     查看或切换模型 (如 /model deepseek-reasoner)
-  /effort [级别]    查看或切换推理强度 (low / medium / high)
+  /effort [级别]    查看或切换推理强度 (low / medium / high / max)
   /cwd <路径>       切换工作目录
   /help             显示帮助
 其余输入都会作为任务发给 agent"""
 
-VALID_EFFORTS = ("low", "medium", "high")
+VALID_EFFORTS = ("low", "medium", "high", "max")
 
 
 def handle_command(agent, line):

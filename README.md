@@ -7,7 +7,7 @@
 - **交互式 TUI** — 真正的输入框:多行输入、历史记录 (上下箭头)、Enter 发送 / Alt+Enter 换行;输入框与会话内容颜色区分 (参考 opencode 风格),斜杠命令自动补全
 - **状态栏** — 底部实时显示模型型号、reasoning effort 和工作目录
 - **模型切换** — `/model` 随时切换模型, 无需重启
-- **推理强度** — `/effort` 切换 reasoning effort (low / medium / high)
+- **推理强度** — `/effort` 切换 reasoning effort (low / medium / high / max), 适配 deepseek-max 等模型
 - **自主编码** — agent 自动调用 bash / 文件读写 / 搜索工具,无需人工干预
 - **斜杠命令** — `/exit`、`/reset`、`/model`、`/effort`、`/cwd`、`/help`
 - **轻依赖** — 核心仅用 Python 标准库,TUI 只需 prompt_toolkit
@@ -35,7 +35,7 @@ python3 -m pip install -e .   # Ubuntu/Debian 需要加 --user --break-system-pa
 export LLM_API_KEY=sk-xxx                              # 必填
 export LLM_BASE_URL=https://api.deepseek.com/v1        # 可选, 默认 DeepSeek
 export LLM_MODEL=deepseek-chat                         # 可选
-export LLM_EFFORT=medium                               # 可选, 推理强度: low/medium/high
+export LLM_EFFORT=medium                               # 可选, 推理强度: low/medium/high/max
 ```
 
 也可以复制 `.env.example` 后自行 source:
@@ -76,7 +76,7 @@ supa "看看当前目录有什么文件, 然后写一个 hello.py 并运行它" 
 | `/exit` | 退出 |
 | `/reset` | 清空对话历史 |
 | `/model [名称]` | 查看当前模型, 或切换 (如 `/model deepseek-reasoner`) |
-| `/effort [级别]` | 查看或切换推理强度 (low / medium / high) |
+| `/effort [级别]` | 查看或切换推理强度 (low / medium / high / max) |
 | `/cwd <路径>` | 切换工作目录 |
 | `/help` | 显示帮助 |
 
@@ -89,7 +89,7 @@ supa "看看当前目录有什么文件, 然后写一个 hello.py 并运行它" 
 | `LLM_API_KEY` | 是 | - | API key |
 | `LLM_BASE_URL` | 否 | `https://api.deepseek.com/v1` | OpenAI 兼容 base url |
 | `LLM_MODEL` | 否 | `deepseek-chat` | 模型名 |
-| `LLM_EFFORT` | 否 | `medium` | 推理强度 (low / medium / high), 作为 `reasoning_effort` 传给 API |
+| `LLM_EFFORT` | 否 | `medium` | 推理强度 (low / medium / high / max), 作为 `reasoning_effort` 传给 API |
 
 其他兼容端点示例:
 
