@@ -1,6 +1,8 @@
 import subprocess
 from pathlib import Path
 
+from . import context, ui
+
 TOOLS = []
 
 
@@ -38,9 +40,9 @@ def _resolve(path, cwd):
         "required": ["command"],
     },
 )
-def run_bash(cwd, command):
+def run_bash(agent, command):
     try:
-        proc = subprocess.run(command, shell=True, cwd=cwd, capture_output=True, text=True, timeout=120)
+        proc = subprocess.run(command, shell=True, cwd=agent.cwd, capture_output=True, text=True, timeout=120)
         out = (proc.stdout or "") + (proc.stderr or "")
         return _truncate(out if out.strip() else "(无输出, 退出码 {})".format(proc.returncode))
     except subprocess.TimeoutExpired:
@@ -59,8 +61,8 @@ def run_bash(cwd, command):
         "required": ["path"],
     },
 )
-def read_file(cwd, path, limit=500):
-    p = _resolve(path, cwd)
+def read_file(agent, path, limit=500):
+    p = _resolve(path, agent.cwd)
     if not p.exists():
         return f"文件不存在: {p}"
     if p.is_dir():
@@ -75,7 +77,7 @@ def read_file(cwd, path, limit=500):
 
 @tool(
     "write_file",
-    "写入或覆盖文件内容, 父目录不存在会自动创建。",
+    "写入或覆盖文件内容, 父目录不存在会自动创建。新建文件或整体重写时使用; 修改已有文件优先用 edit_file。",
     {
         "type": "object",
         "properties": {
@@ -85,11 +87,39 @@ def read_file(cwd, path, limit=500):
         "required": ["path", "content"],
     },
 )
-def write_file(cwd, path, content):
-    p = _resolve(path, cwd)
+def write_file(agent, path, content):
+    p = _resolve(path, agent.cwd)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
     return f"已写入 {p} ({len(content)} 字符)"
+
+
+@tool(
+    "edit_file",
+    "精确字符串替换修改文件: old 必须在文件中唯一出现, 会被 new 替换。修改已有文件的首选方式。",
+    {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "文件路径, 相对或绝对"},
+            "old": {"type": "string", "description": "要替换的原文, 必须与文件内容完全一致且唯一"},
+            "new": {"type": "string", "description": "替换后的新文本"},
+        },
+        "required": ["path", "old", "new"],
+    },
+)
+def edit_file(agent, path, old, new):
+    p = _resolve(path, agent.cwd)
+    if not p.exists():
+        return f"文件不存在: {p}"
+    text = p.read_text(errors="replace")
+    count = text.count(old)
+    if count == 0:
+        return "未找到要替换的原文, 请 read_file 确认内容后重试"
+    if count > 1:
+        return f"原文出现 {count} 次, 不唯一, 请提供更多上下文"
+    p.write_text(text.replace(old, new, 1), encoding="utf-8")
+    ui.print_diff(old, new)
+    return f"已修改 {p}"
 
 
 @tool(
@@ -102,8 +132,8 @@ def write_file(cwd, path, content):
         },
     },
 )
-def list_dir(cwd, path="."):
-    p = _resolve(path, cwd)
+def list_dir(agent, path="."):
+    p = _resolve(path, agent.cwd)
     if not p.exists() or not p.is_dir():
         return f"目录不存在: {p}"
     entries = []
@@ -126,10 +156,10 @@ def list_dir(cwd, path="."):
         "required": ["pattern"],
     },
 )
-def grep(cwd, pattern, path=".", include=None):
+def grep(agent, pattern, path=".", include=None):
     import re
 
-    p = _resolve(path, cwd)
+    p = _resolve(path, agent.cwd)
     if not p.exists():
         return f"目录不存在: {p}"
     regex = re.compile(pattern)
@@ -151,3 +181,70 @@ def grep(cwd, pattern, path=".", include=None):
                     matches.append("...(匹配过多, 已截断)")
                     return "\n".join(matches)
     return "\n".join(matches) if matches else "(无匹配)"
+
+
+@tool(
+    "todo_write",
+    "维护当前任务清单, 每次传完整清单覆盖旧的。多步骤任务开始时列出计划, 每完成一步更新状态。",
+    {
+        "type": "object",
+        "properties": {
+            "todos": {
+                "type": "array",
+                "description": "完整任务清单",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string", "description": "任务描述"},
+                        "status": {"type": "string", "enum": ["pending", "in_progress", "completed"]},
+                    },
+                    "required": ["content", "status"],
+                },
+            }
+        },
+        "required": ["todos"],
+    },
+)
+def todo_write(agent, todos):
+    agent.todos = todos
+    ui.print_todos(todos)
+    marks = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
+    return "\n".join(f"{marks.get(t['status'], '[ ]')} {t['content']}" for t in todos) or "(清单已清空)"
+
+
+@tool(
+    "task",
+    "派生一个子代理独立完成子任务并返回结果摘要。适合独立的大块工作 (研究一个模块、批量修改)。子代理从空白上下文开始, prompt 必须包含全部必要背景与验收标准。",
+    {
+        "type": "object",
+        "properties": {
+            "description": {"type": "string", "description": "子任务简述, 几个词, 展示给用户"},
+            "prompt": {"type": "string", "description": "给子代理的完整任务说明"},
+        },
+        "required": ["description", "prompt"],
+    },
+)
+def task(agent, description, prompt):
+    if agent.depth >= 1:
+        return "子代理不能再派生子代理, 请直接完成"
+    from .agent import Agent  # 延迟导入避免循环依赖
+
+    sub = Agent(agent.llm, agent.cwd, depth=agent.depth + 1)
+    result = sub.chat(prompt)
+    return result or "(子代理未返回结果)"
+
+
+@tool(
+    "remember",
+    "把用户偏好或项目关键事实追加到项目记忆 (SUPA.md), 之后每次会话都会自动加载。",
+    {
+        "type": "object",
+        "properties": {
+            "fact": {"type": "string", "description": "要记住的一条事实, 简洁一行"},
+        },
+        "required": ["fact"],
+    },
+)
+def remember(agent, fact):
+    path = context.append_memory(agent.cwd, fact)
+    return f"已记入 {path}"

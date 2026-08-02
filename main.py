@@ -6,8 +6,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from harness.agent import Agent
+from harness.context import discover_skills, load_memory
 from harness.llm import LLM, LLMError, SUPPORTED_MODELS
-from harness.ui import C
+from harness.ui import C, print_todos
 
 try:
     from harness.tui import create_session, prompt_line
@@ -22,6 +23,9 @@ HELP = """命令:
   /model [名称]     查看或切换模型 (如 /model deepseek-v4-pro)
   /effort [级别]    查看或切换推理强度 (low / medium / high / max)
   /cwd <路径>       切换工作目录
+  /skills           列出可用 skills (.supa/skills/*/SKILL.md)
+  /memory           查看项目记忆 (SUPA.md)
+  /todos            查看当前任务清单
   /help             显示帮助
 其余输入都会作为任务发给 agent"""
 
@@ -60,9 +64,24 @@ def handle_command(agent, line):
         p = Path(line[5:].strip()).expanduser()
         if p.exists() and p.is_dir():
             agent.cwd = str(p.resolve())
+            agent.refresh_system()
             print(f"已切换: {agent.cwd}")
         else:
             print(f"目录不存在: {p}")
+    elif line == "/skills":
+        skills = discover_skills(agent.cwd)
+        if not skills:
+            print("没有发现 skills, 在 .supa/skills/<名称>/SKILL.md 添加")
+        for s in skills:
+            print(f"  {C.GREEN}{s['name']}{C.RESET}  {s['description']}  {C.DIM}{s['path']}{C.RESET}")
+    elif line == "/memory":
+        memory = load_memory(agent.cwd)
+        print(memory if memory else f"暂无项目记忆, agent 会通过 remember 工具写入 {agent.cwd}/SUPA.md")
+    elif line == "/todos":
+        if agent.todos:
+            print_todos(agent.todos)
+        else:
+            print("当前没有任务清单")
     else:
         return None
     return True

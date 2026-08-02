@@ -8,8 +8,13 @@
 - **状态栏** — 底部实时显示模型型号、reasoning effort 和工作目录
 - **模型切换** — `/model` 随时切换模型, 无需重启
 - **推理强度** — `/effort` 切换 reasoning effort (low / medium / high / max), 适配 deepseek-max 等模型
-- **自主编码** — agent 自动调用 bash / 文件读写 / 搜索工具,无需人工干预
-- **斜杠命令** — `/exit`、`/reset`、`/model`、`/effort`、`/cwd`、`/help`
+- **自主编码** — agent 自动调用 bash / 文件读写 (含精确 diff 编辑) / 搜索工具,无需人工干预
+- **工具渲染** — opencode 风格: `●` 工具行 + 结果预览缩进,edit_file 显示彩色 diff
+- **任务系统** — agent 用 `todo_write` 维护任务清单,终端实时渲染 ☐ ◐ ☑,`/todos` 查看
+- **子代理** — `task` 工具派生空白上下文子代理跑独立子任务,只回传结论
+- **记忆** — 项目根目录 `SUPA.md` 自动载入,agent 用 `remember` 沉淀事实,`/memory` 查看
+- **Skills** — `.supa/skills/*/SKILL.md` 自动发现进系统提示,`/skills` 查看
+- **斜杠命令** — `/exit`、`/reset`、`/model`、`/effort`、`/cwd`、`/skills`、`/memory`、`/todos`、`/help`
 - **轻依赖** — 核心仅用 Python 标准库,TUI 只需 prompt_toolkit
 - **API 兼容** — 任何 OpenAI-format 端点都能接 (DeepSeek / OpenAI / Ollama / vLLM)
 - **可扩展** — 加一个函数就能注册新工具
@@ -109,8 +114,19 @@ export LLM_BASE_URL=https://api.deepseek.com/v1 LLM_MODEL=deepseek-v4-pro
 | `bash` | 执行任意 shell 命令 (120s 超时) |
 | `read_file` | 读取文件, 带行号 |
 | `write_file` | 写入/覆盖文件, 自动建目录 |
+| `edit_file` | 精确字符串替换 (old 须唯一), 终端显示彩色 diff |
 | `list_dir` | 列出目录内容 |
 | `grep` | 正则搜索文件内容 |
+| `todo_write` | 维护任务清单, 终端实时渲染 ☐ ◐ ☑ |
+| `task` | 派生子代理独立完成子任务, 回传结果摘要 (子代理不能再派生) |
+| `remember` | 追加事实到项目记忆 SUPA.md |
+
+## 记忆 / Skills / 任务系统
+
+- **项目记忆** — 项目根目录的 `SUPA.md` 每次会话自动载入系统提示; agent 用 `remember` 工具写入, `/memory` 查看
+- **Skills** — 在 `<项目>/.supa/skills/<名称>/SKILL.md` 或 `~/.supa/skills/` 放带 frontmatter (`name` / `description`) 的技能文件, 自动发现并列入系统提示, agent 匹配到任务时自行读取完整指令; `/skills` 查看
+- **任务系统** — 多步骤任务 agent 会先用 `todo_write` 列计划并逐步更新, `/todos` 随时查看
+- **子代理** — 独立大块子任务通过 `task` 工具派生新 agent (空白上下文, 深度限 1 层), 只回传结论, 不污染主对话
 
 ## 扩展新工具
 
@@ -122,9 +138,11 @@ export LLM_BASE_URL=https://api.deepseek.com/v1 LLM_MODEL=deepseek-v4-pro
     "查看 git 状态。",
     {"type": "object", "properties": {}},
 )
-def git_status(cwd):
+def git_status(agent):
     return "clean"
 ```
+
+工具函数第一个参数是 agent 实例 (可取 `agent.cwd` / `agent.llm` / `agent.todos`)。
 
 注册后 agent 会自动拿到该工具的 schema, 无需其他改动。
 
@@ -145,10 +163,13 @@ print(result)
 supa-agent/
 ├── main.py            # CLI 入口 (交互模式 + 一次性模式)
 ├── harness/
-│   ├── agent.py       # agent 主循环 (流式 / 工具调用)
-│   ├── tools.py       # 工具注册与实现
+│   ├── agent.py       # agent 主循环 (流式 / 工具调用 / 子代理深度)
+│   ├── tools.py       # 工具注册与实现 (含 edit/todo/task/remember)
+│   ├── context.py     # 项目记忆 (SUPA.md) 与 skills 发现
+│   ├── ui.py          # 终端渲染: 工具行 / diff / 任务清单
 │   ├── tui.py         # prompt_toolkit 输入框 / 状态栏 / 斜杠补全
 │   └── llm.py         # OpenAI 兼容 API 客户端 (流式 + 非流式)
+├── tests/             # 零依赖自检: python3 tests/test_harness.py
 ├── .env.example       # 环境变量示例
 └── requirements.txt   # 仅 prompt_toolkit
 ```

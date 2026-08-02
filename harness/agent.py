@@ -1,14 +1,8 @@
 import json
 
-from .llm import LLM
+from .context import build_system_prompt
 from .tools import TOOLS
-from .ui import C
-
-SYSTEM_PROMPT_TEMPLATE = """你是 supa-agent, 一个基于 {model} 模型的 coding agent, 运行在用户的 shell 里。
-你可以调用工具来查看、修改文件和执行命令。规则:
-1. 先探索再动手, 用 list_dir / read_file 了解现状。
-2. 用 bash 运行测试或验证你的修改。
-3. 完成后用自然语言总结你做了什么。"""
+from .ui import C, result_preview, tool_line
 
 
 class _ToolAccumulator:
@@ -41,19 +35,52 @@ class _ToolAccumulator:
         return calls
 
 
+def _arg_summary(name, args):
+    """每种工具挑最关键的参数做单行摘要。"""
+    if name == "bash":
+        return args.get("command", "")
+    if name in ("read_file", "write_file", "edit_file"):
+        return args.get("path", "")
+    if name == "list_dir":
+        return args.get("path", ".")
+    if name == "grep":
+        return f"{args.get('pattern', '')}  {args.get('path', '.')}"
+    if name == "task":
+        return args.get("description", "")
+    if name == "remember":
+        return args.get("fact", "")
+    if name == "todo_write":
+        return f"{len(args.get('todos', []))} 项"
+    return json.dumps(args, ensure_ascii=False)[:120]
+
+
 class Agent:
-    def __init__(self, llm, cwd, max_steps=30):
+    def __init__(self, llm, cwd, max_steps=30, depth=0):
         self.llm = llm
         self.cwd = cwd
         self.max_steps = max_steps
-        self.messages = [{"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(model=self.llm.model)}]
+        self.depth = depth
+        self.todos = []
+        self.messages = [{"role": "system", "content": build_system_prompt(llm.model, cwd)}]
 
     def set_model(self, name):
         self.llm.model = name
-        self.messages[0] = {"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(model=name)}
+        self.refresh_system()
+
+    def refresh_system(self):
+        """模型 / cwd / 记忆变化后重建系统提示。"""
+        self.messages[0] = {"role": "system", "content": build_system_prompt(self.llm.model, self.cwd)}
 
     def reset(self):
+        self.refresh_system()
         self.messages = [self.messages[0]]
+        self.todos = []
+
+    @property
+    def tools(self):
+        if self.depth >= 1:
+            return [t for t in TOOLS if t.name != "task"]  # 子代理不能再派生
+        return TOOLS
 
     @property
     def schemas(self):
@@ -66,7 +93,7 @@ class Agent:
                     "parameters": t.parameters,
                 },
             }
-            for t in TOOLS
+            for t in self.tools
         ]
 
     def _stream(self):
@@ -76,15 +103,16 @@ class Agent:
             delta = chunk["choices"][0].get("delta", {})
             if delta.get("content"):
                 content.append(delta["content"])
-                print(delta["content"], end="", flush=True)
+                if self.depth == 0:  # 子代理不刷屏, 只回传最终结果
+                    print(delta["content"], end="", flush=True)
             accumulator.add(delta)
-        print()
+        if self.depth == 0 and content:
+            print()
         return "".join(content), accumulator.to_calls()
 
     def chat(self, task):
         self.messages.append({"role": "user", "content": task})
-        for step in range(1, self.max_steps + 1):
-            print(f"\n{C.DIM}--- step {step} ---{C.RESET}")
+        for _ in range(self.max_steps):
             content, tool_calls = self._stream()
             if not tool_calls:
                 return content
@@ -96,16 +124,22 @@ class Agent:
                 }
             )
             for call in tool_calls:
-                fn = next(t for t in TOOLS if t.name == call["function"]["name"])
+                name = call["function"]["name"]
                 try:
                     args = json.loads(call["function"]["arguments"] or "{}")
                 except json.JSONDecodeError:
                     args = {}
-                print(f"  {C.DIM}{call['function']['name']}({json.dumps(args, ensure_ascii=False)[:200]}){C.RESET}")
-                try:
-                    result = fn(self.cwd, **args)
-                except Exception as e:
-                    result = f"工具出错: {type(e).__name__}: {e}"
+                fn = next((t for t in self.tools if t.name == name), None)
+                tool_line(name, _arg_summary(name, args), depth=self.depth)
+                if fn is None:
+                    result = f"未知工具: {name}"
+                else:
+                    try:
+                        result = fn(self, **args)
+                    except Exception as e:
+                        result = f"工具出错: {type(e).__name__}: {e}"
+                if name not in ("todo_write", "edit_file"):  # 这两个工具自带渲染
+                    result_preview(result, depth=self.depth)
                 self.messages.append(
                     {"role": "tool", "tool_call_id": call["id"], "content": result}
                 )

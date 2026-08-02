@@ -6,7 +6,7 @@ from prompt_toolkit.styles import Style
 
 from .llm import SUPPORTED_MODELS
 
-COMMANDS = ["/exit", "/reset", "/model", "/effort", "/cwd", "/help"]
+COMMANDS = ["/exit", "/reset", "/model", "/effort", "/cwd", "/skills", "/memory", "/todos", "/help"]
 
 STYLE = Style.from_dict(
     {
