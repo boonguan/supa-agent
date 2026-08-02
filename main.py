@@ -21,7 +21,7 @@ HELP = """命令:
   /exit             退出
   /reset            清空对话历史
   /model [名称]     查看或切换模型 (如 /model deepseek-v4-pro)
-  /effort [级别]    查看或切换推理强度 (low / medium / high / max)
+  /effort [级别]    查看或切换推理强度 (档位随模型, deepseek: none/low/high/max)
   /cwd <路径>       切换工作目录
   /skills           列出可用 skills (.supa/skills/*/SKILL.md)
   /memory           查看项目记忆 (SUPA.md)

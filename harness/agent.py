@@ -97,32 +97,42 @@ class Agent:
         ]
 
     def _stream(self):
-        content = []
+        content, reasoning = [], []
         accumulator = _ToolAccumulator()
         for chunk in self.llm.chat_stream(self.messages, tools=self.schemas):
             delta = chunk["choices"][0].get("delta", {})
+            if delta.get("reasoning_content"):
+                reasoning.append(delta["reasoning_content"])
+                if self.depth == 0:  # 思维链暗色显示
+                    print(f"{C.DIM}{delta['reasoning_content']}{C.RESET}", end="", flush=True)
             if delta.get("content"):
+                if reasoning and not content and self.depth == 0:
+                    print()  # 思维链与正文之间空一行
                 content.append(delta["content"])
                 if self.depth == 0:  # 子代理不刷屏, 只回传最终结果
                     print(delta["content"], end="", flush=True)
             accumulator.add(delta)
-        if self.depth == 0 and content:
+        if self.depth == 0 and (content or reasoning):
             print()
-        return "".join(content), accumulator.to_calls()
+        return "".join(content), "".join(reasoning), accumulator.to_calls()
+
+    def _assistant_message(self, content, reasoning, tool_calls=None):
+        msg = {"role": "assistant", "content": content or None}
+        if reasoning:
+            # DeepSeek 思考模式: 带 tools 的请求必须回传 reasoning_content, 否则 400
+            msg["reasoning_content"] = reasoning
+        if tool_calls:
+            msg["tool_calls"] = tool_calls
+        return msg
 
     def chat(self, task):
         self.messages.append({"role": "user", "content": task})
         for _ in range(self.max_steps):
-            content, tool_calls = self._stream()
+            content, reasoning, tool_calls = self._stream()
             if not tool_calls:
+                self.messages.append(self._assistant_message(content, reasoning))
                 return content
-            self.messages.append(
-                {
-                    "role": "assistant",
-                    "content": content or None,
-                    "tool_calls": tool_calls,
-                }
-            )
+            self.messages.append(self._assistant_message(content, reasoning, tool_calls))
             for call in tool_calls:
                 name = call["function"]["name"]
                 try:

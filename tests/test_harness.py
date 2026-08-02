@@ -23,6 +23,7 @@ class FakeLLM:
     def chat_stream(self, messages, tools=None):
         self.last_tools = tools
         content, tool_calls = self.rounds.pop(0)
+        yield {"choices": [{"delta": {"reasoning_content": "想一想"}}]}  # 模拟思维链
         if content:
             yield {"choices": [{"delta": {"content": content}}]}
         if tool_calls:
@@ -72,8 +73,11 @@ def test_agent_loop_with_tools(tmp):
     assert result == "完成"
     assert target.read_text() == "hi world\n"
     assert agent.todos[0]["content"] == "改文件"
-    # 消息序列: system, user, assistant(tool_calls), tool x2, (最终轮无 tool)
-    assert [m["role"] for m in agent.messages] == ["system", "user", "assistant", "tool", "tool"]
+    # 消息序列: 最终 assistant 回复也入历史 (多轮对话连续性)
+    assert [m["role"] for m in agent.messages] == ["system", "user", "assistant", "tool", "tool", "assistant"]
+    # DeepSeek 思考模式: assistant 消息必须回传 reasoning_content
+    assert all(m["reasoning_content"] == "想一想" for m in agent.messages if m["role"] == "assistant")
+    assert agent.messages[-1]["content"] == "完成"
 
 
 def test_edit_file_guards(tmp):
@@ -107,19 +111,22 @@ def test_subagent(tmp):
 def test_effort_per_model():
     from harness.llm import LLM, supported_efforts
 
-    assert supported_efforts("deepseek-max") == ("low", "medium", "high", "max")
-    assert supported_efforts("deepseek-v4-flash") == ("low", "medium", "high")
+    assert supported_efforts("deepseek-v4-flash") == ("none", "low", "high", "max")
+    assert supported_efforts("gpt-5") == ("low", "medium", "high")
     assert supported_efforts("qwen2.5-coder") == ()
 
     llm = LLM.__new__(LLM)  # 跳过 __init__ 的 api_key 检查
-    llm.model, llm.effort = "deepseek-v4-flash", "max"
-    assert llm.effective_effort() == "high"  # 超上限降级
+    llm.model, llm.effort = "deepseek-v4-flash", "medium"
+    assert llm.effective_effort() == "high"  # deepseek 无 medium, 就近向上取
     assert llm._payload([])["reasoning_effort"] == "high"
+    llm.effort = "none"  # 关闭思考: 发 thinking disabled 而非 reasoning_effort
+    p = llm._payload([])
+    assert p["thinking"] == {"type": "disabled"} and "reasoning_effort" not in p
     llm.model = "qwen2.5-coder"
     assert llm.effective_effort() is None
     assert "reasoning_effort" not in llm._payload([])  # 不支持的模型不发参数
-    llm.model, llm.effort = "deepseek-max", "max"
-    assert llm._payload([], stream=True) == {"model": "deepseek-max", "messages": [], "stream": True, "reasoning_effort": "max"}
+    llm.model, llm.effort = "deepseek-v4-pro", "max"
+    assert llm._payload([], stream=True) == {"model": "deepseek-v4-pro", "messages": [], "stream": True, "reasoning_effort": "max"}
 
 
 def test_tui():

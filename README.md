@@ -7,7 +7,7 @@
 - **交互式 TUI** — 真正的输入框:多行输入、历史记录 (上下箭头)、Enter 发送 / Alt+Enter 换行;输入框与会话内容颜色区分 (参考 opencode 风格),斜杠命令自动补全
 - **状态栏** — 底部实时显示模型型号、reasoning effort 和工作目录
 - **模型切换** — `/model` 随时切换模型, 无需重启
-- **推理强度** — `/effort` 切换 reasoning effort (low / medium / high / max), 适配 deepseek-max 等模型
+- **推理强度** — `/effort` 按模型适配档位 (deepseek: none/low/high/max, none 关闭思考), 不支持的模型不发参数
 - **自主编码** — agent 自动调用 bash / 文件读写 (含精确 diff 编辑) / 搜索工具,无需人工干预
 - **工具渲染** — opencode 风格: `●` 工具行 + 结果预览缩进,edit_file 显示彩色 diff
 - **任务系统** — agent 用 `todo_write` 维护任务清单,终端实时渲染 ☐ ◐ ☑,`/todos` 查看
@@ -40,7 +40,7 @@ python3 -m pip install -e .   # Ubuntu/Debian 需要加 --user --break-system-pa
 export LLM_API_KEY=sk-xxx                              # 必填
 export LLM_BASE_URL=https://api.deepseek.com/v1        # 可选, 默认 DeepSeek
 export LLM_MODEL=deepseek-v4-flash                    # 可选, 默认 deepseek-v4-flash
-export LLM_EFFORT=medium                               # 可选, 推理强度: low/medium/high/max
+export LLM_EFFORT=high                                 # 可选, 推理强度, deepseek: none/low/high/max
 ```
 
 也可以复制 `.env.example` 后自行 source:
@@ -61,7 +61,7 @@ supa -d /path/to/your/project
 ```
 
 ```
-supa-agent  ·  model: deepseek-v4-flash  ·  effort: medium  ·  cwd: /path/to/your/project
+supa-agent  ·  model: deepseek-v4-flash  ·  effort: high  ·  cwd: /path/to/your/project
 输入 / 查看可用命令
 > 看看这个项目是做什么的
 > 给代码加上错误处理
@@ -81,7 +81,7 @@ supa "看看当前目录有什么文件, 然后写一个 hello.py 并运行它" 
 | `/exit` | 退出 |
 | `/reset` | 清空对话历史 |
 | `/model [名称]` | 查看当前模型, 或切换 (如 `/model deepseek-v4-pro`), 输入 `/model ` 会自动补全支持列表 |
-| `/effort [级别]` | 查看或切换推理强度 (low / medium / high / max) |
+| `/effort [级别]` | 查看或切换推理强度 (档位随模型, 自动补全) |
 | `/cwd <路径>` | 切换工作目录 |
 | `/help` | 显示帮助 |
 
@@ -94,7 +94,7 @@ supa "看看当前目录有什么文件, 然后写一个 hello.py 并运行它" 
 | `LLM_API_KEY` | 是 | - | API key |
 | `LLM_BASE_URL` | 否 | `https://api.deepseek.com/v1` | OpenAI 兼容 base url |
 | `LLM_MODEL` | 否 | `deepseek-v4-flash` | 模型名 (DeepSeek 支持 `deepseek-v4-pro` / `deepseek-v4-flash`) |
-| `LLM_EFFORT` | 否 | `medium` | 推理强度 (low / medium / high / max), 作为 `reasoning_effort` 传给 API |
+| `LLM_EFFORT` | 否 | `high` | 推理强度, 按模型映射: 支持的发 `reasoning_effort`, none 发 `thinking: disabled`, 不支持的不发 |
 
 其他兼容端点示例:
 
