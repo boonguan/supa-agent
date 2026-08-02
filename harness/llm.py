@@ -12,10 +12,11 @@ class LLMError(Exception):
 
 
 class LLM:
-    def __init__(self, base_url=None, api_key=None, model=None):
+    def __init__(self, base_url=None, api_key=None, model=None, effort=None):
         self.base_url = (base_url or os.environ.get("LLM_BASE_URL", DEFAULT_BASE_URL)).rstrip("/")
         self.api_key = api_key or os.environ.get("LLM_API_KEY", "")
         self.model = model or os.environ.get("LLM_MODEL", DEFAULT_MODEL)
+        self.effort = effort or os.environ.get("LLM_EFFORT", "medium")
         if not self.api_key:
             raise LLMError("LLM_API_KEY 未设置")
 
@@ -39,6 +40,7 @@ class LLM:
         payload = {"model": self.model, "messages": messages}
         if tools:
             payload["tools"] = tools
+        payload["reasoning_effort"] = self.effort
         with self._post(payload) as resp:
             return json.loads(resp.read().decode())
 
@@ -46,6 +48,7 @@ class LLM:
         payload = {"model": self.model, "messages": messages, "stream": True}
         if tools:
             payload["tools"] = tools
+        payload["reasoning_effort"] = self.effort
         with self._post(payload) as resp:
             for raw in resp:
                 line = raw.decode(errors="replace").strip()
