@@ -1,3 +1,5 @@
+import shutil
+
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import InMemoryHistory
@@ -8,18 +10,23 @@ from .llm import SUPPORTED_MODELS
 
 COMMANDS = ["/exit", "/reset", "/model", "/effort", "/cwd", "/skills", "/memory", "/todos", "/help"]
 
+# opencode 风格: 边框输入框 + 低调前景色状态栏 (不用背景色块)
 STYLE = Style.from_dict(
     {
-        "prompt": "bg:#d1d5db #111827 bold",
-        "buffer": "bg:#d1d5db #111827",
-        "completion-menu.completion": "bg:#67e8f9 #111827",
+        "border": "#4b5563",
+        "arrow": "bold #34d399",
+        "placeholder": "italic #6b7280",
+        "completion-menu.completion": "bg:#1f2937 #d1d5db",
         "completion-menu.completion.current": "bg:#0ea5e9 #ffffff",
-        "model": "bold #86efac",
-        "effort": "#fbbf24",
-        "cwd": "#a5b4fc",
-        "sep": "#6b7280",
+        "bottom-toolbar": "noreverse bg:default #6b7280",
+        "bottom-toolbar.model": "noreverse bg:default #34d399",
+        "bottom-toolbar.effort": "noreverse bg:default #fbbf24",
+        "bottom-toolbar.cwd": "noreverse bg:default #93c5fd",
     }
 )
+
+DIM = "\033[2;38;5;240m"
+RESET = "\033[0m"
 
 
 class SlashCompleter(Completer):
@@ -51,24 +58,37 @@ def build_bindings():
     return kb
 
 
-def create_session():
+def create_session(**kwargs):
     return PromptSession(
         history=InMemoryHistory(),
         key_bindings=build_bindings(),
         completer=SlashCompleter(),
         complete_while_typing=True,
         style=STYLE,
+        **kwargs,
     )
+
+
+def _width():
+    return shutil.get_terminal_size().columns
 
 
 def prompt_line(session, agent):
-    return session.prompt(
-        [("class:prompt", "> ")],
-        bottom_toolbar=lambda: [
-            ("class:model", f"model: {agent.llm.model}"),
-            ("class:sep", "  ·  "),
-            ("class:effort", f"effort: {agent.llm.effort}"),
-            ("class:sep", "  ·  "),
-            ("class:cwd", f"cwd: {agent.cwd}"),
-        ],
-    )
+    w = _width()
+    print(f"{DIM}╭{'─' * (w - 2)}╮{RESET}")
+    try:
+        text = session.prompt(
+            [("class:border", "│ "), ("class:arrow", "❯ ")],
+            placeholder=[("class:placeholder", "输入任务, / 查看命令 · Enter 发送 · Alt+Enter 换行")],
+            prompt_continuation=[("class:border", "│ "), ("", "  ")],
+            bottom_toolbar=lambda: [
+                ("class:bottom-toolbar.model", f" {agent.llm.model}"),
+                ("class:bottom-toolbar", "  ·  "),
+                ("class:bottom-toolbar.effort", f"effort: {agent.llm.effort}"),
+                ("class:bottom-toolbar", "  ·  "),
+                ("class:bottom-toolbar.cwd", agent.cwd),
+            ],
+        )
+    finally:
+        print(f"{DIM}╰{'─' * (w - 2)}╯{RESET}")
+    return text

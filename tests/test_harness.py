@@ -104,8 +104,33 @@ def test_subagent(tmp):
     assert all(t.name != "task" for t in sub.tools)
 
 
+def test_tui():
+    try:
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+
+        from harness.tui import create_session, prompt_line
+    except ImportError:
+        return  # 无 prompt_toolkit 时跳过
+
+    class FakeAgent:
+        cwd = "/tmp"
+
+        class llm:
+            model = "m"
+            effort = "medium"
+
+    with create_pipe_input() as pipe:
+        session = create_session(input=pipe, output=DummyOutput())
+        pipe.send_text("hello\n")
+        assert prompt_line(session, FakeAgent()) == "hello"
+        pipe.send_text("a\x1b\rb\n")  # Alt+Enter 换行, Enter 发送
+        assert prompt_line(session, FakeAgent()) == "a\nb"
+
+
 def main():
     test_tool_registry()
+    test_tui()
     for fn in (test_memory_and_skills, test_agent_loop_with_tools, test_edit_file_guards, test_subagent):
         with tempfile.TemporaryDirectory() as tmp:
             fn(tmp)
