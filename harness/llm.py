@@ -19,10 +19,7 @@ class LLM:
         if not self.api_key:
             raise LLMError("LLM_API_KEY 未设置")
 
-    def chat(self, messages, tools=None):
-        payload = {"model": self.model, "messages": messages}
-        if tools:
-            payload["tools"] = tools
+    def _post(self, payload):
         req = urllib.request.Request(
             f"{self.base_url}/chat/completions",
             data=json.dumps(payload).encode(),
@@ -33,8 +30,31 @@ class LLM:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=300) as resp:
-                return json.loads(resp.read().decode())
+            return urllib.request.urlopen(req, timeout=600)
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="replace")
             raise LLMError(f"API 返回 {e.code}: {detail[:500]}") from e
+
+    def chat(self, messages, tools=None):
+        payload = {"model": self.model, "messages": messages}
+        if tools:
+            payload["tools"] = tools
+        with self._post(payload) as resp:
+            return json.loads(resp.read().decode())
+
+    def chat_stream(self, messages, tools=None):
+        payload = {"model": self.model, "messages": messages, "stream": True}
+        if tools:
+            payload["tools"] = tools
+        with self._post(payload) as resp:
+            for raw in resp:
+                line = raw.decode(errors="replace").strip()
+                if not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    yield json.loads(data)
+                except json.JSONDecodeError:
+                    continue

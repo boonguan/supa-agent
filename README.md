@@ -10,9 +10,32 @@ export LLM_API_KEY=sk-xxx            # 必填
 export LLM_BASE_URL=https://api.deepseek.com/v1   # 可选, 默认 DeepSeek
 export LLM_MODEL=deepseek-chat                    # 可选
 
-# 跑一个任务
+# 交互模式 (像 claude code 一样边聊边干活)
+python3 main.py -d /tmp/demo
+
+# 或一次性跑一个任务
 python3 main.py "看看当前目录有什么文件, 然后写一个 hello.py 并运行它" -d /tmp/demo
 ```
+
+## 交互模式
+
+不带 task 参数启动即进入交互 REPL, 支持连续对话 (上下文保持)、流式输出:
+
+```
+supa-agent 交互模式, 当前目录: /tmp/demo
+/tmp/demo > 列出当前目录
+/tmp/demo > 给每个文件加一行注释
+/tmp/demo > /exit
+```
+
+斜杠命令:
+
+| 命令 | 说明 |
+|---|---|
+| `/exit` | 退出 |
+| `/reset` | 清空对话历史 |
+| `/cwd <路径>` | 切换工作目录 |
+| `/help` | 显示帮助 |
 
 ## 配置
 
