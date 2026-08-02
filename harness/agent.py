@@ -4,7 +4,7 @@ from .llm import LLM
 from .tools import TOOLS
 from .ui import C
 
-SYSTEM_PROMPT = """你是 supa-agent, 一个基于 DeepSeek 模型 (deepseek-v4-pro / deepseek-v4-flash) 的 coding agent, 运行在用户的 shell 里。
+SYSTEM_PROMPT_TEMPLATE = """你是 supa-agent, 一个基于 {model} 模型的 coding agent, 运行在用户的 shell 里。
 你可以调用工具来查看、修改文件和执行命令。规则:
 1. 先探索再动手, 用 list_dir / read_file 了解现状。
 2. 用 bash 运行测试或验证你的修改。
@@ -46,7 +46,11 @@ class Agent:
         self.llm = llm
         self.cwd = cwd
         self.max_steps = max_steps
-        self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        self.messages = [{"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(model=self.llm.model)}]
+
+    def set_model(self, name):
+        self.llm.model = name
+        self.messages[0] = {"role": "system", "content": SYSTEM_PROMPT_TEMPLATE.format(model=name)}
 
     def reset(self):
         self.messages = [self.messages[0]]

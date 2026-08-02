@@ -39,9 +39,9 @@ def handle_command(agent, line):
     elif line == "/model" or line.startswith("/model "):
         name = line[6:].strip()
         if name:
-            if name not in SUPPORTED_MODELS:
+            if "deepseek" in agent.llm.base_url and name not in SUPPORTED_MODELS:
                 print(f"{C.YELLOW}提示: DeepSeek 支持 {', '.join(SUPPORTED_MODELS)}, 你设置的是 {name}{C.RESET}")
-            agent.llm.model = name
+            agent.set_model(name)
             print(f"{C.GREEN}模型已切换: {name}{C.RESET}")
         else:
             print(f"当前模型: {agent.llm.model}")
