@@ -1,34 +1,67 @@
-# coding agent harness
+# supa-agent
 
-一个零依赖 (纯 Python 标准库) 的 coding agent 框架:给模型一套工具 (bash / read_file / write_file / list_dir / grep),让它自主完成编码任务。兼容任何 OpenAI-format 的 API (DeepSeek / OpenAI / Ollama / vLLM 等)。
+一个零依赖 (纯 Python 标准库) 的 coding agent。给模型一套工具 (bash / read_file / write_file / list_dir / grep),让它自主完成编码任务,像 Claude Code 一样在终端里聊着干活。兼容任何 OpenAI-format 的 API (DeepSeek / OpenAI / Ollama / vLLM 等)。
+
+## 功能
+
+- **交互式 REPL** — 边聊边干活,多轮对话上下文自动保持,流式输出实时可见
+- **自主编码** — agent 自动调用 bash / 文件读写 / 搜索工具,无需人工干预
+- **斜杠命令** — `/exit`、`/reset`、`/cwd`、`/help`
+- **零依赖** — 仅用 Python 标准库,无需 `pip install` 任何东西
+- **API 兼容** — 任何 OpenAI-format 端点都能接 (DeepSeek / OpenAI / Ollama / vLLM)
+- **可扩展** — 加一个函数就能注册新工具
+- **双模式** — 交互式对话,或一次性执行单个任务
 
 ## 快速开始
 
+### 1. 安装
+
+需要 Python 3.8+。项目零依赖,克隆即可用:
+
 ```bash
-# 配置 (也可以用 --api-key / --base-url / --model 参数)
-export LLM_API_KEY=sk-xxx            # 必填
-export LLM_BASE_URL=https://api.deepseek.com/v1   # 可选, 默认 DeepSeek
-export LLM_MODEL=deepseek-chat                    # 可选
+git clone git@github.com:boonguan/supa-agent.git
+cd supa-agent
+```
 
-# 交互模式 (像 claude code 一样边聊边干活)
-python3 main.py -d /tmp/demo
+### 2. 配置 API key
 
-# 或一次性跑一个任务
+```bash
+export LLM_API_KEY=sk-xxx                              # 必填
+export LLM_BASE_URL=https://api.deepseek.com/v1        # 可选, 默认 DeepSeek
+export LLM_MODEL=deepseek-chat                         # 可选
+```
+
+也可以复制 `.env.example` 后自行 source:
+
+```bash
+cp .env.example .env && vim .env    # 填入 LLM_API_KEY
+set -a && source .env && set +a
+```
+
+或用命令行参数 `--api-key` / `--base-url` / `--model`,优先级高于环境变量。
+
+### 3. 使用
+
+**交互模式** (推荐, 像 Claude Code 一样连续对话):
+
+```bash
+python3 main.py -d /path/to/your/project
+```
+
+```
+supa-agent 交互模式, 当前目录: /path/to/your/project
+/path/to/your/project > 看看这个项目是做什么的
+/path/to/your/project > 给代码加上错误处理
+/path/to/your/project > /exit
+```
+
+**一次性任务模式** (适合脚本调用 / CI):
+
+```bash
 python3 main.py "看看当前目录有什么文件, 然后写一个 hello.py 并运行它" -d /tmp/demo
 ```
 
-## 交互模式
-
-不带 task 参数启动即进入交互 REPL, 支持连续对话 (上下文保持)、流式输出:
-
-```
-supa-agent 交互模式, 当前目录: /tmp/demo
-/tmp/demo > 列出当前目录
-/tmp/demo > 给每个文件加一行注释
-/tmp/demo > /exit
-```
-
-斜杠命令:
+### 4. 斜杠命令
 
 | 命令 | 说明 |
 |---|---|
@@ -37,7 +70,7 @@ supa-agent 交互模式, 当前目录: /tmp/demo
 | `/cwd <路径>` | 切换工作目录 |
 | `/help` | 显示帮助 |
 
-## 配置
+## 配置项
 
 | 环境变量 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
@@ -50,9 +83,9 @@ supa-agent 交互模式, 当前目录: /tmp/demo
 ```bash
 # OpenAI
 export LLM_BASE_URL=https://api.openai.com/v1 LLM_MODEL=gpt-4o-mini
-# Ollama (本地)
+# Ollama (本地, 免费)
 export LLM_BASE_URL=http://localhost:11434/v1 LLM_MODEL=qwen2.5-coder
-# DeepSeek 的 reasoner
+# DeepSeek 推理模型
 export LLM_BASE_URL=https://api.deepseek.com/v1 LLM_MODEL=deepseek-reasoner
 ```
 
@@ -91,4 +124,17 @@ llm = LLM(api_key="sk-xxx", model="deepseek-chat")
 agent = Agent(llm, cwd="/path/to/project")
 result = agent.run("给项目加一个 README")
 print(result)
+```
+
+## 项目结构
+
+```
+supa-agent/
+├── main.py            # CLI 入口 (交互模式 + 一次性模式)
+├── harness/
+│   ├── agent.py       # agent 主循环 (流式 / 工具调用)
+│   ├── tools.py       # 工具注册与实现
+│   └── llm.py         # OpenAI 兼容 API 客户端 (流式 + 非流式)
+├── .env.example       # 环境变量示例
+└── requirements.txt   # 零依赖, 仅作说明
 ```
