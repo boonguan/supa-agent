@@ -1,13 +1,14 @@
 # supa-agent
 
-一个零依赖 (纯 Python 标准库) 的 coding agent。给模型一套工具 (bash / read_file / write_file / list_dir / grep),让它自主完成编码任务,像 Claude Code 一样在终端里聊着干活。兼容任何 OpenAI-format 的 API (DeepSeek / OpenAI / Ollama / vLLM 等)。
+一个轻量的 coding agent:给模型一套工具 (bash / read_file / write_file / list_dir / grep),让它自主完成编码任务,像 Claude Code 一样在终端里聊着干活。核心 agent 零依赖 (纯 Python 标准库), TUI 输入框仅需 prompt_toolkit。兼容任何 OpenAI-format 的 API (DeepSeek / OpenAI / Ollama / vLLM 等)。
 
 ## 功能
 
-- **交互式 REPL** — 边聊边干活,多轮对话上下文自动保持,流式输出实时可见
+- **交互式 TUI** — 真正的输入框:多行输入、历史记录 (上下箭头)、语法高亮、Enter 发送 / Alt+Enter 换行
+- **状态栏** — 底部实时显示当前模型型号和工作目录
 - **自主编码** — agent 自动调用 bash / 文件读写 / 搜索工具,无需人工干预
 - **斜杠命令** — `/exit`、`/reset`、`/cwd`、`/help`
-- **零依赖** — 仅用 Python 标准库,无需 `pip install` 任何东西
+- **轻依赖** — 核心仅用 Python 标准库,TUI 只需 prompt_toolkit
 - **API 兼容** — 任何 OpenAI-format 端点都能接 (DeepSeek / OpenAI / Ollama / vLLM)
 - **可扩展** — 加一个函数就能注册新工具
 - **双模式** — 交互式对话,或一次性执行单个任务
@@ -16,7 +17,7 @@
 
 ### 1. 安装
 
-需要 Python 3.8+。项目零依赖,安装只需一条命令:
+需要 Python 3.8+。安装时自动带上 TUI 依赖:
 
 ```bash
 git clone git@github.com:boonguan/supa-agent.git
@@ -52,10 +53,13 @@ supa -d /path/to/your/project
 ```
 
 ```
-supa-agent 交互模式, 当前目录: /path/to/your/project
-/path/to/your/project > 看看这个项目是做什么的
-/path/to/your/project > 给代码加上错误处理
-/path/to/your/project > /exit
+supa-agent  ·  model: deepseek-chat  ·  cwd: /path/to/your/project
+命令:
+  /exit             退出
+  ...
+> 看看这个项目是做什么的
+> 给代码加上错误处理
+> /exit
 ```
 
 **一次性任务模式** (适合脚本调用 / CI):
@@ -137,7 +141,8 @@ supa-agent/
 ├── harness/
 │   ├── agent.py       # agent 主循环 (流式 / 工具调用)
 │   ├── tools.py       # 工具注册与实现
+│   ├── tui.py         # prompt_toolkit 输入框 / 状态栏
 │   └── llm.py         # OpenAI 兼容 API 客户端 (流式 + 非流式)
 ├── .env.example       # 环境变量示例
-└── requirements.txt   # 零依赖, 仅作说明
+└── requirements.txt   # 仅 prompt_toolkit
 ```

@@ -1,1 +1,2 @@
-# 零依赖, 仅使用 Python 标准库, 无需安装任何东西
+# 仅依赖 prompt_toolkit (TUI 输入框), 核心 agent 使用 Python 标准库
+prompt_toolkit>=3.0

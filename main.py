@@ -8,6 +8,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 from harness.agent import Agent
 from harness.llm import LLM, LLMError
 
+try:
+    from harness.tui import create_session, prompt_line
+
+    TUI_AVAILABLE = True
+except ImportError:
+    TUI_AVAILABLE = False
+
 HELP = """命令:
   /exit             退出
   /reset            清空对话历史
@@ -16,36 +23,51 @@ HELP = """命令:
 其余输入都会作为任务发给 agent"""
 
 
+def handle_command(agent, line):
+    if line in ("/exit", "/quit", "/q"):
+        return False
+    if line == "/help":
+        print(HELP)
+    elif line == "/reset":
+        agent.reset()
+        print("历史已清空")
+    elif line.startswith("/cwd "):
+        p = Path(line[5:].strip()).expanduser()
+        if p.exists() and p.is_dir():
+            agent.cwd = str(p.resolve())
+            print(f"已切换: {agent.cwd}")
+        else:
+            print(f"目录不存在: {p}")
+    else:
+        return None
+    return True
+
+
 def repl(agent):
-    print(f"supa-agent 交互模式, 当前目录: {agent.cwd}")
+    print(f"supa-agent  ·  model: {agent.llm.model}  ·  cwd: {agent.cwd}")
     print(HELP)
+    session = create_session() if TUI_AVAILABLE else None
+    if TUI_AVAILABLE:
+        print("Enter 发送 · Alt+Enter 换行 · 上下箭头翻历史")
     while True:
         try:
-            line = input(f"{agent.cwd} > ").strip()
+            if TUI_AVAILABLE:
+                line = prompt_line(session, agent).strip()
+            else:
+                line = input(f"{agent.cwd} > ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nbye")
             break
         if not line:
             continue
-        if line in ("/exit", "/quit", "/q"):
-            break
-        if line == "/help":
-            print(HELP)
-        elif line == "/reset":
-            agent.reset()
-            print("历史已清空")
-        elif line.startswith("/cwd "):
-            p = Path(line[5:].strip()).expanduser()
-            if p.exists() and p.is_dir():
-                agent.cwd = str(p.resolve())
-                print(f"已切换: {agent.cwd}")
-            else:
-                print(f"目录不存在: {p}")
-        else:
+        handled = handle_command(agent, line)
+        if handled is None:
             try:
                 agent.chat(line)
             except KeyboardInterrupt:
                 print("\n(已中断)")
+        elif not handled:
+            break
 
 
 def main():
