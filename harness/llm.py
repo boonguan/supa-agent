@@ -4,7 +4,8 @@ import urllib.error
 import urllib.request
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
-DEFAULT_MODEL = "deepseek-chat"
+DEFAULT_MODEL = "deepseek-v4-flash"
+SUPPORTED_MODELS = ["deepseek-v4-pro", "deepseek-v4-flash"]
 
 
 class LLMError(Exception):

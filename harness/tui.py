@@ -4,6 +4,8 @@ from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
 
+from .llm import SUPPORTED_MODELS
+
 COMMANDS = ["/exit", "/reset", "/model", "/effort", "/cwd", "/help"]
 
 STYLE = Style.from_dict(
@@ -23,6 +25,12 @@ STYLE = Style.from_dict(
 class SlashCompleter(Completer):
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
+        if text.startswith("/model "):
+            prefix = text[len("/model "):]
+            for model in SUPPORTED_MODELS:
+                if model.startswith(prefix):
+                    yield Completion(model, start_position=-len(prefix))
+            return
         if text.startswith("/"):
             for cmd in COMMANDS:
                 if cmd.startswith(text):

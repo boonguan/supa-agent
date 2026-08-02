@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from harness.agent import Agent
-from harness.llm import LLM, LLMError
+from harness.llm import LLM, LLMError, SUPPORTED_MODELS
 from harness.ui import C
 
 try:
@@ -19,7 +19,7 @@ except ImportError:
 HELP = """命令:
   /exit             退出
   /reset            清空对话历史
-  /model [名称]     查看或切换模型 (如 /model deepseek-reasoner)
+  /model [名称]     查看或切换模型 (如 /model deepseek-v4-pro)
   /effort [级别]    查看或切换推理强度 (low / medium / high / max)
   /cwd <路径>       切换工作目录
   /help             显示帮助
@@ -39,6 +39,8 @@ def handle_command(agent, line):
     elif line == "/model" or line.startswith("/model "):
         name = line[6:].strip()
         if name:
+            if name not in SUPPORTED_MODELS:
+                print(f"{C.YELLOW}提示: DeepSeek 支持 {', '.join(SUPPORTED_MODELS)}, 你设置的是 {name}{C.RESET}")
             agent.llm.model = name
             print(f"{C.GREEN}模型已切换: {name}{C.RESET}")
         else:
