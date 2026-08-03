@@ -1,6 +1,7 @@
 import json
 
 from .context import build_system_prompt
+from .policy import Policy
 from .tools import TOOLS
 from .ui import ConsoleUI
 
@@ -63,12 +64,13 @@ def _arg_summary(name, args):
 
 
 class Agent:
-    def __init__(self, llm, cwd, max_steps=30, depth=0, ui=None):
+    def __init__(self, llm, cwd, max_steps=30, depth=0, ui=None, policy=None):
         self.llm = llm
         self.cwd = cwd
         self.max_steps = max_steps
         self.depth = depth
         self.ui = ui or ConsoleUI()
+        self.policy = policy or Policy()
         self.todos = []
         self.tool_log = []  # (name, summary, result), /output 回看
         self.abort = False  # TUI ctrl-c 置位, 流式循环检测后中断
@@ -149,7 +151,30 @@ class Agent:
             msg["tool_calls"] = tool_calls
         return msg
 
+    def _interrupt_cleanup(self):
+        """中断后补齐缺失的 tool 回复: assistant(tool_calls) 后每个 call 必须有
+        对应 tool 消息, 否则下一轮请求会被 API 拒绝 (400)。"""
+        for i in range(len(self.messages) - 1, -1, -1):
+            m = self.messages[i]
+            if m["role"] == "user":
+                return
+            if m["role"] == "assistant":
+                answered = {t.get("tool_call_id") for t in self.messages[i + 1:] if t["role"] == "tool"}
+                for call in m.get("tool_calls") or []:
+                    if call["id"] not in answered:
+                        self.messages.append(
+                            {"role": "tool", "tool_call_id": call["id"], "content": "(用户中断, 未执行)"}
+                        )
+                return
+
     def chat(self, task):
+        try:
+            return self._chat(task)
+        except KeyboardInterrupt:
+            self._interrupt_cleanup()
+            raise
+
+    def _chat(self, task):
         self.abort = False
         self.messages.append({"role": "user", "content": task})
         for _ in range(self.max_steps):
@@ -172,10 +197,20 @@ class Agent:
                 if fn is None:
                     result = f"未知工具: {name}"
                 else:
-                    try:
-                        result = fn(self, **args)
-                    except Exception as e:
-                        result = f"工具出错: {type(e).__name__}: {e}"
+                    allowed = True
+                    if self.policy.check(name, args, getattr(fn, "readonly", False)) == "ask":
+                        answer = self.ui.confirm(name, summary, self.depth)
+                        if answer == "a":
+                            self.policy.remember(name, args)
+                        elif answer != "y":
+                            allowed = False
+                    if not allowed:
+                        result = "用户拒绝执行该操作, 请改用其他方式或询问用户"
+                    else:
+                        try:
+                            result = fn(self, **args)
+                        except Exception as e:
+                            result = f"工具出错: {type(e).__name__}: {e}"
                 self.tool_log.append((name, summary, result))
                 del self.tool_log[:-50]
                 self.ui.tool_result(name, result, self.depth)

@@ -229,3 +229,11 @@ class ConsoleUI:
 
     def notice(self, text):
         print(f"{C.DIM}{text}{C.RESET}")
+
+    def confirm(self, name, summary, depth):
+        """询问是否允许执行修改类操作。返回 y / n / a (always)。"""
+        print(f"{C.YELLOW}⚠ 允许执行 {name}: {summary[:120]} ?  [y=允许 n=拒绝 a=本会话总是允许]{C.RESET}")
+        try:
+            return (input("> ").strip().lower() or "n")[0]
+        except (EOFError, KeyboardInterrupt):
+            return "n"

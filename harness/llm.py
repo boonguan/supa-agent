@@ -1,7 +1,10 @@
 import json
 import os
+import time
 import urllib.error
 import urllib.request
+
+RETRYABLE_CODES = (429, 500, 502, 503, 504)
 
 DEFAULT_BASE_URL = "https://api.deepseek.com/v1"
 DEFAULT_MODEL = "deepseek-v4-flash"
@@ -37,24 +40,46 @@ class LLM:
         self.api_key = api_key or os.environ.get("LLM_API_KEY", "")
         self.model = model or os.environ.get("LLM_MODEL", DEFAULT_MODEL)
         self.effort = effort or os.environ.get("LLM_EFFORT", "high")  # DeepSeek 思考模式默认 high
+        self._resp = None
+        self._aborted = False
         if not self.api_key:
             raise LLMError("LLM_API_KEY 未设置")
 
-    def _post(self, payload):
-        req = urllib.request.Request(
-            f"{self.base_url}/chat/completions",
-            data=json.dumps(payload).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}",
-            },
-            method="POST",
-        )
-        try:
-            return urllib.request.urlopen(req, timeout=600)
-        except urllib.error.HTTPError as e:
-            detail = e.read().decode(errors="replace")
-            raise LLMError(f"API 返回 {e.code}: {detail[:500]}") from e
+    def abort(self):
+        """中断当前请求: 直接关闭连接, 让阻塞中的读立即返回。"""
+        self._aborted = True
+        resp, self._resp = self._resp, None
+        if resp is not None:
+            try:
+                resp.close()
+            except OSError:
+                pass
+
+    def _post(self, payload, retries=3):
+        data = json.dumps(payload).encode()
+        for attempt in range(retries):
+            req = urllib.request.Request(
+                f"{self.base_url}/chat/completions",
+                data=data,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}",
+                },
+                method="POST",
+            )
+            try:
+                return urllib.request.urlopen(req, timeout=600)
+            except urllib.error.HTTPError as e:
+                detail = e.read().decode(errors="replace")
+                if e.code in RETRYABLE_CODES and attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise LLMError(f"API 返回 {e.code}: {detail[:500]}") from e
+            except urllib.error.URLError as e:
+                if attempt < retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise LLMError(f"网络错误: {e.reason}") from e
 
     def effective_effort(self):
         """当前模型实际生效的推理强度: 不支持返回 None, 不在档位表时就近向上取 (如 medium -> high)。"""
@@ -91,15 +116,24 @@ class LLM:
             return json.loads(resp.read().decode())
 
     def chat_stream(self, messages, tools=None):
+        self._aborted = False
         with self._post(self._payload(messages, tools, stream=True)) as resp:
-            for raw in resp:
-                line = raw.decode(errors="replace").strip()
-                if not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    yield json.loads(data)
-                except json.JSONDecodeError:
-                    continue
+            self._resp = resp
+            try:
+                for raw in resp:
+                    line = raw.decode(errors="replace").strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        yield json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+            except (OSError, ValueError) as e:
+                if self._aborted:
+                    raise KeyboardInterrupt from None
+                raise LLMError(f"流式连接中断: {e}") from e
+            finally:
+                self._resp = None

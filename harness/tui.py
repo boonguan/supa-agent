@@ -48,6 +48,8 @@ STYLE = Style.from_dict(
         "dim": "#6b7280",
         "user": "bg:#374151 bold #34d399",
         "user.text": "bg:#374151 #e5e7eb",
+        "approval": "bold #fbbf24",
+        "approval.keys": "#fbbf24",
     }
 )
 
@@ -90,6 +92,8 @@ class TranscriptUI:
         self.verbose = False  # 新工具块默认展开与否
         self.show_reasoning = False  # 新思考块默认展开与否
         self.blocks = []
+        self.pending = None  # 等待 y/n/a 确认的 approval 块
+        self._approval_event = threading.Event()
         self._text_block = None
         self._md = None
         self._reasoning = None
@@ -178,6 +182,23 @@ class TranscriptUI:
     def notice(self, text):
         self.ansi(f"{C.DIM}{text}{C.RESET}")
 
+    def confirm(self, name, summary, depth):
+        """agent 线程阻塞等待用户按 y/n/a (按键绑定在 run_app 里)。"""
+        block = {"kind": "approval", "name": name, "summary": summary, "answer": None}
+        self.blocks.append(block)
+        self._approval_event.clear()
+        self.pending = block
+        self.on_change()
+        self._approval_event.wait()
+        self.pending = None
+        self.on_change()
+        return block["answer"] or "n"
+
+    def answer_pending(self, answer):
+        if self.pending is not None:
+            self.pending["answer"] = answer
+            self._approval_event.set()
+
     # --- 渲染 ---
 
     def _toggle(self, block):
@@ -199,6 +220,13 @@ class TranscriptUI:
                 for i, line in enumerate(b["text"].splitlines() or [""]):
                     prefix = "❯ " if i == 0 else "  "
                     frags += [("class:user", prefix), ("class:user.text", f" {line} "), ("", "\n")]
+            elif b["kind"] == "approval":
+                if b["answer"] is None:
+                    frags.append(("class:approval", f"⚠ 允许执行 {b['name']}: {_truncate_width(b['summary'], 100)} ?"))
+                    frags.append(("class:approval.keys", "  [y 允许 / n 拒绝 / a 总是允许]\n"))
+                else:
+                    verdict = {"y": "已允许", "a": "已允许(总是)", "n": "已拒绝"}.get(b["answer"], "已拒绝")
+                    frags.append(("class:dim", f"⚠ {b['name']}: {verdict}\n"))
             elif b["kind"] == "reasoning":
                 h = self._toggle(b)
                 arrow = "▾" if b["expanded"] else "▸"
@@ -248,13 +276,19 @@ class FollowPane(ScrollablePane):
 
 def _status_fragments(agent, running):
     effort = agent.llm.effective_effort()
+    if getattr(agent.ui, "pending", None) is not None:
+        hint = "  ·  等待确认: 按 y / n / a"
+    elif running[0]:
+        hint = "  ·  运行中 (ctrl-c 中断)"
+    else:
+        hint = "  ·  点击 ▸ 展开 · PgUp/PgDn 滚动"
     return [
         ("class:status.model", f" {agent.llm.model}"),
         ("class:status", "  ·  "),
         ("class:status.effort", f"effort: {effort or '不支持'}"),
         ("class:status", "  ·  "),
         ("class:status.cwd", agent.cwd),
-        ("class:status", "  ·  运行中 (ctrl-c 中断)" if running[0] else "  ·  点击 ▸ 展开 · PgUp/PgDn 滚动"),
+        ("class:status", hint),
     ]
 
 
@@ -337,10 +371,27 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
 
     @kb.add("c-c")
     def _(event):
-        if running[0]:
+        if ui.pending is not None:
+            ui.answer_pending("n")
+        elif running[0]:
             agent.abort = True
+            getattr(agent.llm, "abort", lambda: None)()  # 关闭连接, 立即打断阻塞的读
         else:
             event.app.exit()
+
+    approval_active = Condition(lambda: ui.pending is not None)
+
+    @kb.add("y", filter=approval_active)
+    def _(event):
+        ui.answer_pending("y")
+
+    @kb.add("n", filter=approval_active)
+    def _(event):
+        ui.answer_pending("n")
+
+    @kb.add("a", filter=approval_active)
+    def _(event):
+        ui.answer_pending("a")
 
     @kb.add("c-d", filter=Condition(lambda: not buf.text))
     def _(event):

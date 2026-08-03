@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from harness.agent import Agent
+from harness.policy import Policy
 from harness.context import append_memory, build_system_prompt, discover_skills, load_memory
 from harness.tools import TOOLS
 
@@ -73,7 +74,7 @@ def test_agent_loop_with_tools(tmp):
               ("edit_file", {"path": "a.txt", "old": "hello", "new": "hi"})]),
         ("完成", None),
     ])
-    agent = Agent(llm, cwd=tmp)
+    agent = Agent(llm, cwd=tmp, policy=Policy(yolo=True))
     result = agent.chat("把 hello 改成 hi")
     assert result == "完成"
     assert target.read_text() == "hi world\n"
@@ -152,6 +153,98 @@ def test_reasoning_collapse(tmp):
     assert "想一想" in buf2.getvalue()  # 展开时输出原文
 
 
+def test_policy(tmp):
+    # 只读放行 / bash 白名单 / 修改类询问 / yolo / always 记忆
+    p = Policy()
+    assert p.check("read_file", {}, True) == "allow"
+    assert p.check("bash", {"command": "ls -la"}, False) == "allow"
+    assert p.check("bash", {"command": "git status"}, False) == "allow"
+    assert p.check("bash", {"command": "ls && rm -rf /"}, False) == "ask"  # 元字符不放行
+    assert p.check("bash", {"command": "rm -rf build"}, False) == "ask"
+    assert p.check("edit_file", {}, False) == "ask"
+    p.remember("bash", {"command": "rm -rf build"})
+    assert p.check("bash", {"command": "rm foo.txt"}, False) == "allow"  # 记住 bash:rm
+    assert p.check("bash", {"command": "curl x"}, False) == "ask"
+    assert Policy(yolo=True).check("bash", {"command": "rm -rf /"}, False) == "allow"
+
+    # 拒绝路径: confirm 返回 n -> 工具不执行, 回复拒绝消息
+    import contextlib
+    import io
+
+    target = Path(tmp) / "c.txt"
+    target.write_text("orig", encoding="utf-8")
+    llm = FakeLLM([
+        ("", [("write_file", {"path": "c.txt", "content": "hacked"})]),
+        ("好的", None),
+    ])
+    agent = Agent(llm, cwd=tmp)
+    agent.ui.confirm = lambda name, summary, depth: "n"
+    with contextlib.redirect_stdout(io.StringIO()):
+        agent.chat("改文件")
+    assert target.read_text() == "orig"  # 未被执行
+    assert any(m["role"] == "tool" and "拒绝" in m["content"] for m in agent.messages)
+
+
+def test_interrupt_cleanup(tmp):
+    agent = Agent(FakeLLM([]), cwd=tmp)
+    agent.messages += [
+        {"role": "user", "content": "x"},
+        {"role": "assistant", "content": None, "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "bash", "arguments": "{}"}},
+            {"id": "c2", "type": "function", "function": {"name": "bash", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "c1", "content": "done"},
+    ]
+    agent._interrupt_cleanup()  # c2 缺回复, 应补齐
+    last = agent.messages[-1]
+    assert last["role"] == "tool" and last["tool_call_id"] == "c2" and "中断" in last["content"]
+    agent._interrupt_cleanup()  # 幂等: 不重复补
+    assert sum(1 for m in agent.messages if m["role"] == "tool") == 2
+
+
+def test_llm_retry(monkeypatched=None):
+    import io as _io
+    import urllib.error
+    import urllib.request
+
+    from harness import llm as llm_mod
+    from harness.llm import LLM
+
+    llm = LLM.__new__(LLM)
+    llm.base_url, llm.api_key, llm.model, llm.effort = "http://x", "k", "m", "high"
+    llm._resp, llm._aborted = None, False
+
+    calls = []
+    real_sleep = llm_mod.time.sleep
+    llm_mod.time.sleep = lambda s: None  # 免等
+    try:
+        def fake_urlopen(req, timeout=None):
+            calls.append(1)
+            if len(calls) < 3:
+                raise urllib.error.HTTPError("http://x", 429, "too many", {}, _io.BytesIO(b""))
+            return "OK"
+
+        real_urlopen = urllib.request.urlopen
+        urllib.request.urlopen = fake_urlopen
+        try:
+            assert llm._post({"a": 1}) == "OK"  # 429 两次后第三次成功
+            assert len(calls) == 3
+        finally:
+            urllib.request.urlopen = real_urlopen
+    finally:
+        llm_mod.time.sleep = real_sleep
+
+
+def test_env_context(tmp):
+    import subprocess
+
+    prompt = build_system_prompt("m1", tmp)
+    assert "平台" in prompt and "日期" in prompt and "不是 git 仓库" in prompt
+    subprocess.run(["git", "init", "-q", "-b", "main", tmp], check=True)
+    prompt = build_system_prompt("m1", tmp)
+    assert "分支 main" in prompt
+
+
 def test_effort_per_model():
     from harness.llm import LLM, supported_efforts
 
@@ -223,7 +316,7 @@ def test_tui():
     vt = Vt100_Output(out_buf, lambda: Size(rows=30, columns=80))
     with tempfile.TemporaryDirectory() as tmp:
         llm = FakeLLM([("", [("bash", {"command": "echo hi"})]), ("**完成**了", None)])
-        agent = Agent(llm, cwd=tmp, ui=TranscriptUI())
+        agent = Agent(llm, cwd=tmp, ui=TranscriptUI(), policy=Policy(yolo=True))
         with create_pipe_input() as pipe:
             pipe.send_text("跑个命令\n")
             threading.Thread(target=lambda: (time.sleep(1.0), pipe.send_text("/exit\n")), daemon=True).start()
@@ -232,13 +325,36 @@ def test_tui():
     for s in ("supa-banner", "跑个命令", "bash", "完成", "已思考"):
         assert s in screen, f"屏幕上看不到: {s}"
 
+    # 权限确认流: write_file 触发确认块, 按 y 放行后执行
+    out_buf2 = io.StringIO()
+    vt2 = Vt100_Output(out_buf2, lambda: Size(rows=30, columns=80))
+    with tempfile.TemporaryDirectory() as tmp:
+        llm = FakeLLM([("", [("write_file", {"path": "x.txt", "content": "data"})]), ("写好了", None)])
+        agent = Agent(llm, cwd=tmp, ui=TranscriptUI())
+        with create_pipe_input() as pipe:
+            pipe.send_text("写个文件\n")
+
+            def later():
+                time.sleep(0.8)
+                pipe.send_text("y")
+                time.sleep(0.8)
+                pipe.send_text("/exit\n")
+
+            threading.Thread(target=later, daemon=True).start()
+            run_app(agent, main_mod.handle_command, input=pipe, output=vt2)
+        assert (Path(tmp) / "x.txt").read_text() == "data"
+    screen2 = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b[>=]", "", out_buf2.getvalue())
+    assert "允许执行 write_file" in screen2 and "已允许" in screen2 and "写好了" in screen2
+
 
 def main():
     test_tool_registry()
     test_markdown_render()
     test_effort_per_model()
+    test_llm_retry()
     test_tui()
-    for fn in (test_memory_and_skills, test_agent_loop_with_tools, test_edit_file_guards, test_subagent, test_reasoning_collapse):
+    for fn in (test_memory_and_skills, test_agent_loop_with_tools, test_edit_file_guards, test_subagent,
+               test_reasoning_collapse, test_policy, test_interrupt_cleanup, test_env_context):
         with tempfile.TemporaryDirectory() as tmp:
             fn(tmp)
     print("所有测试通过")

@@ -6,11 +6,12 @@ from . import context
 TOOLS = []
 
 
-def tool(name, description, parameters):
+def tool(name, description, parameters, readonly=False):
     def deco(fn):
         fn.name = name
         fn.description = description
         fn.parameters = parameters
+        fn.readonly = readonly
         TOOLS.append(fn)
         return fn
 
@@ -60,6 +61,7 @@ def run_bash(agent, command):
         },
         "required": ["path"],
     },
+    readonly=True,
 )
 def read_file(agent, path, limit=500):
     p = _resolve(path, agent.cwd)
@@ -131,6 +133,7 @@ def edit_file(agent, path, old, new):
             "path": {"type": "string", "description": "目录路径, 默认当前工作目录"},
         },
     },
+    readonly=True,
 )
 def list_dir(agent, path="."):
     p = _resolve(path, agent.cwd)
@@ -155,6 +158,7 @@ def list_dir(agent, path="."):
         },
         "required": ["pattern"],
     },
+    readonly=True,
 )
 def grep(agent, pattern, path=".", include=None):
     import re
@@ -204,6 +208,7 @@ def grep(agent, pattern, path=".", include=None):
         },
         "required": ["todos"],
     },
+    readonly=True,
 )
 def todo_write(agent, todos):
     agent.todos = todos
@@ -223,13 +228,14 @@ def todo_write(agent, todos):
         },
         "required": ["description", "prompt"],
     },
+    readonly=True,
 )
 def task(agent, description, prompt):
     if agent.depth >= 1:
         return "子代理不能再派生子代理, 请直接完成"
     from .agent import Agent  # 延迟导入避免循环依赖
 
-    sub = Agent(agent.llm, agent.cwd, depth=agent.depth + 1, ui=agent.ui)
+    sub = Agent(agent.llm, agent.cwd, depth=agent.depth + 1, ui=agent.ui, policy=agent.policy)
     result = sub.chat(prompt)
     return result or "(子代理未返回结果)"
 
@@ -244,6 +250,7 @@ def task(agent, description, prompt):
         },
         "required": ["fact"],
     },
+    readonly=True,
 )
 def remember(agent, fact):
     path = context.append_memory(agent.cwd, fact)

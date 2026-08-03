@@ -1,4 +1,7 @@
 """项目记忆 (SUPA.md) 与 skills 发现, 组装进系统提示。"""
+import datetime
+import platform
+import subprocess
 from pathlib import Path
 
 MEMORY_FILE = "SUPA.md"
@@ -66,8 +69,32 @@ def discover_skills(cwd):
     return skills
 
 
+def _git_info(cwd):
+    try:
+        r = subprocess.run(["git", "-C", cwd, "branch", "--show-current"], capture_output=True, text=True, timeout=3)
+        if r.returncode != 0:
+            return ""
+        branch = r.stdout.strip() or "(detached HEAD)"
+        s = subprocess.run(["git", "-C", cwd, "status", "--porcelain"], capture_output=True, text=True, timeout=3)
+        dirty = len(s.stdout.splitlines())
+        return f"git 仓库, 分支 {branch}, {dirty} 个文件有未提交改动"
+    except Exception:
+        return ""
+
+
+def _env_block(cwd):
+    lines = [
+        f"- 平台: {platform.system()} ({platform.machine()})",
+        f"- 日期: {datetime.date.today().isoformat()}",
+        f"- 工作目录: {cwd}",
+    ]
+    git = _git_info(cwd)
+    lines.append(f"- {git}" if git else "- 不是 git 仓库")
+    return "# 环境\n" + "\n".join(lines)
+
+
 def build_system_prompt(model, cwd):
-    parts = [SYSTEM_PROMPT_TEMPLATE.format(model=model)]
+    parts = [SYSTEM_PROMPT_TEMPLATE.format(model=model), _env_block(cwd)]
     memory = load_memory(cwd)
     if memory:
         parts.append(f"# 项目记忆 ({MEMORY_FILE})\n{memory}")

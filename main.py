@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from harness.agent import Agent
 from harness.context import discover_skills, load_memory
 from harness.llm import LLM, LLMError, SUPPORTED_MODELS, supported_efforts
+from harness.policy import Policy
 from harness.ui import C, print_todos
 
 try:
@@ -162,6 +163,7 @@ def main():
     ap.add_argument("--api-key", default=None, help="API key, 默认取 LLM_API_KEY")
     ap.add_argument("--model", default=None, help="模型名, 默认取 LLM_MODEL")
     ap.add_argument("--effort", default=None, help="推理强度, 默认取 LLM_EFFORT")
+    ap.add_argument("--yolo", action="store_true", help="跳过所有权限确认 (危险, 适合沙箱/CI)")
     args = ap.parse_args()
 
     try:
@@ -173,7 +175,7 @@ def main():
         print("需要设置环境变量 LLM_API_KEY, 可选 LLM_BASE_URL / LLM_MODEL, 详见 README", file=sys.stderr)
         sys.exit(1)
 
-    agent = Agent(llm, cwd=str(Path(args.dir).resolve()))
+    agent = Agent(llm, cwd=str(Path(args.dir).resolve()), policy=Policy(yolo=args.yolo))
     if args.task:
         try:
             agent.run(" ".join(args.task))
