@@ -9,7 +9,8 @@ from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, ScrollablePane, Window
+from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, Window
+from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
@@ -102,6 +103,9 @@ class TranscriptUI:
         self._reasoning = None
         self._pending_tools = []  # FIFO: 并行执行时 tool_result 按序回填
         self._ansi_cache = {}  # id(text_block) -> (len, fragments)
+        self.follow = True  # 跟随底部: 光标锚点放末行, Window 自动滚动保持可见
+        self.anchor = 0  # 不跟随时的锚点行号
+        self.total_lines = 0  # 上次渲染的总行数
         self.on_change = lambda: None  # 新内容产生: 重绘并跟随底部
         self.on_redraw = lambda: None  # 仅重绘 (展开/折叠等), 不动滚动位置
 
@@ -217,87 +221,143 @@ class TranscriptUI:
         def handler(mouse_event):
             if mouse_event.event_type == MouseEventType.MOUSE_UP:
                 block["expanded"] = not block["expanded"]
-                self.on_redraw()  # 用户在阅读, 不要跳到底部
+                self.follow = False  # 用户在阅读: 锚定在该块头部, 不跳底部
+                self.anchor = block.get("_line", 0)
+                self.on_redraw()
             else:
                 return NotImplemented
 
         return handler
 
+    VIEW_LINES = 400  # 每帧只渲染锚点附近这么多行 (Window 的 create_content 是 O(总行数))
+
+    @staticmethod
+    def _block_key(b):
+        kind = b["kind"]
+        if kind == "text":
+            return (len(b["ansi"]),)
+        if kind == "tool":
+            return (len(b["result"]), b["expanded"])
+        if kind == "reasoning":
+            return (b["label"], b["expanded"], len(b["text"]))
+        if kind == "approval":
+            return (b["answer"], b["selected"])
+        return (b.get("text"),)
+
+    @staticmethod
+    def _slice_frags(frags, lo, hi):
+        """取 fragments 中第 [lo, hi) 行 (按 \\n 计数)。"""
+        out = []
+        line = 0
+        for f in frags:
+            if line >= hi:
+                break
+            n = f[1].count("\n")
+            if n == 0:
+                if line >= lo:
+                    out.append(f)
+            elif line >= lo and line + n <= hi:
+                out.append(f)
+            elif line + n > lo:  # 部分交叠, 按行切开
+                parts = f[1].split("\n")
+                kept = [parts[i] for i in range(len(parts) - 1) if lo <= line + i < hi]
+                if kept:
+                    out.append((f[0], "\n".join(kept) + "\n") + tuple(f[2:]))
+            line += n
+        return out
+
     def fragments(self):
-        frags = []
+        entries = []
+        total = 0
         for b in self.blocks:
-            if b["kind"] == "text":
-                cached = self._ansi_cache.get(id(b))
-                if cached is None or cached[0] != len(b["ansi"]):  # ANSI 解析较贵, 按块缓存
-                    cached = (len(b["ansi"]), to_formatted_text(ANSI(b["ansi"])))
-                    self._ansi_cache[id(b)] = cached
-                frags += cached[1]
-            elif b["kind"] == "user":
-                for i, line in enumerate(b["text"].splitlines() or [""]):
-                    prefix = "❯ " if i == 0 else "  "
-                    frags += [("class:user", prefix), ("class:user.text", f" {line} "), ("", "\n")]
-            elif b["kind"] == "approval":
-                if b["answer"] is None:
-                    frags.append(("class:approval", f"⚠ {b['name']}  {_truncate_width(b['summary'], 100)}\n"))
-                    for i, (key, label) in enumerate(self.APPROVAL_OPTIONS):
-                        def click(mouse_event, k=key):
-                            if mouse_event.event_type == MouseEventType.MOUSE_UP:
-                                self.answer_pending(k)
-                            else:
-                                return NotImplemented
+            key = self._block_key(b)
+            cached = self._ansi_cache.get(id(b))
+            if cached is None or cached[0] != key:  # 逐帧重建 fragment 很贵, 块级缓存
+                block_frags = []
+                self._emit_block(b, block_frags)
+                cached = (key, block_frags, sum(f[1].count("\n") for f in block_frags))
+                self._ansi_cache[id(b)] = cached
+            b["_line"] = total
+            entries.append(cached)
+            total += cached[2]
+        self.total_lines = total
 
-                        cursor = "❯" if i == b["selected"] else " "
-                        style = "class:approval.selected" if i == b["selected"] else "class:approval.option"
-                        frags.append((style, f"  {cursor} {i + 1}. {label}  ", click))
-                        frags.append(("", "\n"))
-                else:
-                    verdict = {"y": "已允许", "a": "已允许 (不再询问)", "auto": "已开启自动审核", "n": "已拒绝"}.get(b["answer"], "已拒绝")
-                    frags.append(("class:dim", f"⚠ {b['name']}: {verdict}\n"))
-            elif b["kind"] == "reasoning":
-                h = self._toggle(b)
-                arrow = "▾" if b["expanded"] else "▸"
-                frags.append(("class:dim", f"{arrow} {b['label']}\n", h))
-                if b["expanded"]:
-                    for line in b["text"].splitlines():
-                        frags.append(("class:dim", f"  {line.expandtabs(4)}\n"))
-            elif b["kind"] == "tool":
-                h = self._toggle(b)
-                indent = "  " * b["depth"]
-                arrow = "▾" if b["expanded"] else "▸"
-                frags += [
-                    ("class:dim", f"{indent}{arrow} ", h),
-                    ("class:tool.bullet", "● ", h),
-                    ("class:tool.name", b["name"] + " ", h),
-                    ("class:dim", _truncate_width(b["summary"], 120) + "\n", h),
-                ]
-                lines = [ln.expandtabs(4) for ln in b["result"].splitlines()] or [""]
-                if b["expanded"]:
-                    for line in lines:
-                        frags.append(("class:dim", f"{indent}    │ {line}\n"))
-                else:
-                    more = f" +{len(lines) - 1} 行" if len(lines) > 1 else ""
-                    frags.append(("class:dim", f"{indent}    └ {_truncate_width(lines[0], 100)}{more}\n", h))
-        return frags
-
-
-class FollowPane(ScrollablePane):
-    """ScrollablePane 只在焦点位于 pane 内部时钳制滚动; 这里焦点永远在输入框,
-    所以每次渲染自己钳制, 并支持跟随底部。"""
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.follow = True
-        self.max_scroll = 0
-
-    def write_to_screen(self, screen, mouse_handlers, write_position, parent_style, erase_bg, z_index):
-        virtual_width = write_position.width - (1 if self.show_scrollbar() else 0)
-        virtual_height = self.content.preferred_height(virtual_width, self.max_available_height).preferred
-        self.max_scroll = max(0, min(virtual_height, self.max_available_height) - write_position.height)
-        if self.follow:
-            self.vertical_scroll = self.max_scroll
+        # 视口窗口: follow 时取末尾, 否则以锚点为中心
+        if self.follow or total == 0:
+            target = max(total - 1, 0)
+            lo = max(0, total - self.VIEW_LINES)
         else:
-            self.vertical_scroll = max(0, min(self.vertical_scroll, self.max_scroll))
-        super().write_to_screen(screen, mouse_handlers, write_position, parent_style, erase_bg, z_index)
+            target = min(max(self.anchor, 0), total - 1)
+            lo = max(0, target - self.VIEW_LINES // 2)
+        hi = min(total, lo + self.VIEW_LINES)
+
+        out = []
+        pos = 0
+        for _, block_frags, n in entries:
+            if pos + n > lo and pos < hi:
+                out.extend(self._slice_frags(block_frags, lo - pos, hi - pos))
+            pos += n
+
+        # 光标锚点: Window 自动滚动保持它可见
+        marker = ("[SetCursorPosition]", "")
+        local = target - lo
+        acc = 0
+        for i, f in enumerate(out):
+            if acc >= local:
+                out.insert(i, marker)
+                return out
+            acc += f[1].count("\n")
+        out.append(marker)
+        return out
+
+    def _emit_block(self, b, frags):
+        if b["kind"] == "text":
+            frags += to_formatted_text(ANSI(b["ansi"]))  # 缓存在 fragments() 的块级缓存
+        elif b["kind"] == "user":
+            for i, line in enumerate(b["text"].splitlines() or [""]):
+                prefix = "❯ " if i == 0 else "  "
+                frags += [("class:user", prefix), ("class:user.text", f" {line} "), ("", "\n")]
+        elif b["kind"] == "approval":
+            if b["answer"] is None:
+                frags.append(("class:approval", f"⚠ {b['name']}  {_truncate_width(b['summary'], 100)}\n"))
+                for i, (key, label) in enumerate(self.APPROVAL_OPTIONS):
+                    def click(mouse_event, k=key):
+                        if mouse_event.event_type == MouseEventType.MOUSE_UP:
+                            self.answer_pending(k)
+                        else:
+                            return NotImplemented
+
+                    cursor = "❯" if i == b["selected"] else " "
+                    style = "class:approval.selected" if i == b["selected"] else "class:approval.option"
+                    frags.append((style, f"  {cursor} {i + 1}. {label}  ", click))
+                    frags.append(("", "\n"))
+            else:
+                verdict = {"y": "已允许", "a": "已允许 (不再询问)", "auto": "已开启自动审核", "n": "已拒绝"}.get(b["answer"], "已拒绝")
+                frags.append(("class:dim", f"⚠ {b['name']}: {verdict}\n"))
+        elif b["kind"] == "reasoning":
+            h = self._toggle(b)
+            arrow = "▾" if b["expanded"] else "▸"
+            frags.append(("class:dim", f"{arrow} {b['label']}\n", h))
+            if b["expanded"]:
+                for line in b["text"].splitlines():
+                    frags.append(("class:dim", f"  {line.expandtabs(4)}\n"))
+        elif b["kind"] == "tool":
+            h = self._toggle(b)
+            indent = "  " * b["depth"]
+            arrow = "▾" if b["expanded"] else "▸"
+            frags += [
+                ("class:dim", f"{indent}{arrow} ", h),
+                ("class:tool.bullet", "● ", h),
+                ("class:tool.name", b["name"] + " ", h),
+                ("class:dim", _truncate_width(b["summary"], 120) + "\n", h),
+            ]
+            lines = [ln.expandtabs(4) for ln in b["result"].splitlines()] or [""]
+            if b["expanded"]:
+                for line in lines:
+                    frags.append(("class:dim", f"{indent}    │ {line}\n"))
+            else:
+                more = f" +{len(lines) - 1} 行" if len(lines) > 1 else ""
+                frags.append(("class:dim", f"{indent}    └ {_truncate_width(lines[0], 100)}{more}\n", h))
 
 
 def _status_fragments(agent, running):
@@ -329,11 +389,16 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
     running = [False]
     history = InMemoryHistory()
 
-    transcript = Window(FormattedTextControl(ui.fragments, focusable=False), wrap_lines=True)
-    pane = FollowPane(transcript, show_scrollbar=True)
+    # Window 只渲染可视区 (整屏虚拟渲染在长会话下每帧数秒); 滚动由 fragments 里的
+    # [SetCursorPosition] 锚点驱动: Window 自动滚动保持锚点可见
+    transcript = Window(
+        FormattedTextControl(ui.fragments, focusable=False),
+        wrap_lines=True,
+        right_margins=[ScrollbarMargin()],
+    )
 
     def follow_bottom():
-        pane.follow = True
+        ui.follow = True
 
     if banner:
         ui.ansi(banner)
@@ -453,14 +518,16 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
 
     @kb.add("pageup")
     def _(event):
-        pane.follow = False
-        pane.vertical_scroll = max(0, pane.vertical_scroll - 10)
+        if ui.follow:
+            ui.follow = False
+            ui.anchor = max(0, ui.total_lines - 1)
+        ui.anchor = max(0, ui.anchor - 10)
 
     @kb.add("pagedown")
     def _(event):
-        pane.vertical_scroll += 10
-        if pane.vertical_scroll >= pane.max_scroll:
-            pane.follow = True  # 滚回底部后恢复跟随
+        ui.anchor += 10
+        if ui.anchor >= ui.total_lines - 1:
+            ui.follow = True  # 滚回底部后恢复跟随
 
     control = BufferControl(
         buffer=buf,
@@ -481,7 +548,7 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
     root = FloatContainer(
         HSplit(
             [
-                pane,
+                transcript,
                 Frame(input_window),
                 Window(FormattedTextControl(lambda: _status_fragments(agent, running)), height=1),
             ]
@@ -499,7 +566,7 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
         output=output,
     )
     ui.on_change = lambda: (follow_bottom(), app.invalidate())
-    # 展开/折叠时停止跟随底部, 保持阅读位置; 新内容到来时 on_change 恢复跟随
-    ui.on_redraw = lambda: (setattr(pane, "follow", False), app.invalidate())
+    # 展开/折叠只重绘, 锚点已由 _toggle 定在被点击的块, 不跳底部
+    ui.on_redraw = lambda: app.invalidate()
     follow_bottom()
     app.run()

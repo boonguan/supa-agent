@@ -512,6 +512,19 @@ def test_tui():
     ui2.end_content(0)
     assert "\t" not in ui2.blocks[-1]["ansi"]
 
+    # 视口窗口化: 巨大展开块只渲染锚点附近 VIEW_LINES 行 (整屏渲染会卡死)
+    ui3 = TranscriptUI()
+    ui3.tool_call("bash", "big", 0)
+    ui3.tool_result("bash", "\n".join(f"line {i}" for i in range(8000)), 0)
+    ui3.blocks[-1]["expanded"] = True
+    frags = ui3.fragments()
+    assert sum(f[1].count("\n") for f in frags) <= ui3.VIEW_LINES + 2
+    tail = "".join(f[1] for f in frags)
+    assert "line 7999" in tail and "line 100\n" not in tail  # 跟随底部: 只见末尾
+    ui3.follow, ui3.anchor = False, 4000
+    mid = "".join(f[1] for f in ui3.fragments())
+    assert "line 4000" in mid and "line 7999" not in mid  # 锚定中部: 只见附近
+
     from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
     from prompt_toolkit.data_structures import Point
 
