@@ -15,7 +15,7 @@ from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
-from prompt_toolkit.layout.processors import AfterInput, BeforeInput, ConditionalProcessor
+from prompt_toolkit.layout.processors import BeforeInput
 from prompt_toolkit.mouse_events import MouseButton, MouseEventType
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Frame
@@ -34,13 +34,10 @@ COMMANDS = ["/exit", "/reset", "/model", "/effort", "/cwd", "/skills", "/memory"
             "/reasoning", "/verbose", "/output", "/compact", "/sessions", "/resume",
             "/jobs", "/cost", "/auto", "/help"]
 
-PLACEHOLDER = "输入任务, / 查看命令 · Enter 发送 · Alt+Enter 换行"
-
 STYLE = Style.from_dict(
     {
         "frame.border": "#4b5563",
         "arrow": "bold #34d399",
-        "placeholder": "italic #6b7280",
         "completion-menu.completion": "bg:#1f2937 #d1d5db",
         "completion-menu.completion.current": "bg:#0ea5e9 #ffffff",
         "status": "#6b7280",
@@ -685,13 +682,7 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
 
     control = _InputControl(
         buffer=buf,
-        input_processors=[
-            BeforeInput([("class:arrow", "❯ ")]),
-            ConditionalProcessor(
-                AfterInput([("class:placeholder", PLACEHOLDER)]),
-                filter=Condition(lambda: not buf.text),
-            ),
-        ],
+        input_processors=[BeforeInput([("class:arrow", "❯ ")])],
     )
     # 默认一行, 跟随内容行数扩展 (最多 8 行); 补全菜单浮层朝上开, 不用预留高度
     input_window = Window(
