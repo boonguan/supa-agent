@@ -15,8 +15,9 @@ _SHELL_META = (";", "&&", "||", "|", ">", "<", "`", "$(")
 
 
 class Policy:
-    def __init__(self, yolo=False):
+    def __init__(self, yolo=False, extra_prefixes=()):
         self.yolo = yolo
+        self.extra_prefixes = tuple(extra_prefixes)  # 配置文件 bash_allow 追加的白名单前缀
         self.session_allowed = set()  # "工具名" 或 "bash:首词" (用户答 a 后记住)
 
     @staticmethod
@@ -31,7 +32,7 @@ class Policy:
         if name == "bash":
             cmd = args.get("command", "").strip()
             first = cmd.split()[0] if cmd.split() else ""
-            safe = first in SAFE_COMMANDS or any(cmd.startswith(p) for p in SAFE_PREFIXES)
+            safe = first in SAFE_COMMANDS or any(cmd.startswith(p) for p in SAFE_PREFIXES + self.extra_prefixes)
             if safe and not any(m in cmd for m in _SHELL_META):
                 return "allow"
             if self._bash_key(cmd) in self.session_allowed:

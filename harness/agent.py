@@ -77,6 +77,7 @@ class Agent:
         self.ui = ui or ConsoleUI()
         self.policy = policy or Policy()
         self.todos = []
+        self.jobs = []  # bash background=true 的后台任务
         self.tool_log = []  # (name, summary, result), /output 回看
         self.abort = False  # TUI ctrl-c 置位, 流式循环检测后中断
         self.last_usage = None  # 上一轮请求的 usage

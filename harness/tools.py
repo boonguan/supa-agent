@@ -32,22 +32,58 @@ def _resolve(path, cwd):
 
 @tool(
     "bash",
-    "执行任意 shell 命令并返回 stdout/stderr。用于查看文件、运行测试、安装依赖、启动服务等。",
+    "执行任意 shell 命令并返回 stdout/stderr。长时间运行的服务用 background=true 转后台, 之后用 job_output 查看。",
     {
         "type": "object",
         "properties": {
-            "command": {"type": "string", "description": "要执行的 shell 命令"}
+            "command": {"type": "string", "description": "要执行的 shell 命令"},
+            "timeout": {"type": "integer", "description": "超时秒数, 默认 120, 最大 600"},
+            "background": {"type": "boolean", "description": "后台运行 (启动服务/长任务), 立即返回任务编号"},
         },
         "required": ["command"],
     },
 )
-def run_bash(agent, command):
+def run_bash(agent, command, timeout=120, background=False):
+    if background:
+        import tempfile
+
+        outfile = tempfile.NamedTemporaryFile(mode="w+", suffix=".log", delete=False)
+        proc = subprocess.Popen(command, shell=True, cwd=agent.cwd, stdout=outfile, stderr=subprocess.STDOUT, text=True)
+        agent.jobs.append({"id": len(agent.jobs) + 1, "command": command, "proc": proc, "outfile": outfile.name})
+        return f"后台任务 #{len(agent.jobs)} 已启动 (pid {proc.pid}), 用 job_output 查看输出"
+    timeout = min(max(int(timeout), 1), 600)
     try:
-        proc = subprocess.run(command, shell=True, cwd=agent.cwd, capture_output=True, text=True, timeout=120)
+        proc = subprocess.run(command, shell=True, cwd=agent.cwd, capture_output=True, text=True, timeout=timeout)
         out = (proc.stdout or "") + (proc.stderr or "")
         return _truncate(out if out.strip() else "(无输出, 退出码 {})".format(proc.returncode))
     except subprocess.TimeoutExpired:
-        return "命令执行超时 (120s)"
+        return f"命令执行超时 ({timeout}s), 长任务可用 background=true"
+
+
+@tool(
+    "job_output",
+    "查看后台任务的状态与最新输出。",
+    {
+        "type": "object",
+        "properties": {
+            "id": {"type": "integer", "description": "bash background=true 返回的任务编号"},
+        },
+        "required": ["id"],
+    },
+    readonly=True,
+)
+def job_output(agent, id):
+    job = next((j for j in agent.jobs if j["id"] == id), None)
+    if job is None:
+        return f"没有后台任务 #{id}"
+    code = job["proc"].poll()
+    status = "运行中" if code is None else f"已结束 (退出码 {code})"
+    try:
+        text = Path(job["outfile"]).read_text(errors="replace")
+    except OSError:
+        text = ""
+    tail = "\n".join(text.splitlines()[-100:])
+    return f"任务 #{id} [{status}] {job['command']}\n{_truncate(tail, 8000) or '(暂无输出)'}"
 
 
 @tool(
@@ -246,30 +282,37 @@ def todo_write(agent, todos):
 
 @tool(
     "task",
-    "派生一个子代理独立完成子任务并返回结果摘要。适合独立的大块工作 (研究一个模块、批量修改)。子代理从空白上下文开始, prompt 必须包含全部必要背景与验收标准。",
+    "派生一个子代理独立完成子任务并返回结果摘要。适合独立的大块工作 (研究一个模块、批量修改)。"
+    "子代理从空白上下文开始, prompt 必须包含全部必要背景与验收标准。agent 参数可选用系统提示中列出的子代理类型。",
     {
         "type": "object",
         "properties": {
             "description": {"type": "string", "description": "子任务简述, 几个词, 展示给用户"},
             "prompt": {"type": "string", "description": "给子代理的完整任务说明"},
+            "agent_type": {"type": "string", "description": "子代理类型名 (可选, 见系统提示的可用列表)"},
         },
         "required": ["description", "prompt"],
     },
     readonly=True,
 )
-def task(agent, description, prompt):
+def task(agent, description, prompt, agent_type=None):
     if agent.depth >= 1:
         return "子代理不能再派生子代理, 请直接完成"
     from .agent import Agent  # 延迟导入避免循环依赖
 
     sub = Agent(agent.llm, agent.cwd, depth=agent.depth + 1, ui=agent.ui, policy=agent.policy)
+    if agent_type:
+        defn = next((a for a in context.discover_agents(agent.cwd) if a["name"] == agent_type), None)
+        if defn is None:
+            return f"未定义的子代理类型: {agent_type}"
+        sub.messages[0]["content"] += f"\n\n# 角色指令 ({agent_type})\n{defn['prompt']}"
     result = sub.chat(prompt)
     return result or "(子代理未返回结果)"
 
 
 @tool(
     "remember",
-    "把用户偏好或项目关键事实追加到项目记忆 (SUPA.md), 之后每次会话都会自动加载。",
+    "把用户偏好或项目关键事实追加到项目记忆 (AGENTS.md/SUPA.md), 之后每次会话都会自动加载。",
     {
         "type": "object",
         "properties": {

@@ -12,7 +12,13 @@
 - **工具渲染** — `▸ ●` 工具行默认折叠 (首行+行数),点击展开完整输出,edit_file 显示彩色 diff;`/verbose` 切换新块默认展开
 - **任务系统** — agent 用 `todo_write` 维护任务清单,终端实时渲染 ☐ ◐ ☑,`/todos` 查看
 - **子代理** — `task` 工具派生空白上下文子代理跑独立子任务,只回传结论
-- **记忆** — 项目根目录 `SUPA.md` 自动载入,agent 用 `remember` 沉淀事实,`/memory` 查看
+- **记忆** — 项目根目录 `AGENTS.md`(通用标准)/`SUPA.md` 自动载入,agent 用 `remember` 沉淀事实,`/memory` 查看
+- **上下文管理** — token 用量实时统计 (状态栏 ctx 占比),超 50% 自动裁剪旧工具输出,超 70% 自动压缩历史为摘要,`/compact` 手动触发,`/cost` 查看用量
+- **会话持久化** — 每轮自动落盘 `~/.supa/sessions/`,`supa --resume` 或 `/resume` 恢复 (含历史/todos/cwd)
+- **并行执行** — 同一轮的多个只读工具调用自动线程池并发
+- **后台任务** — bash 支持 `background=true` 起服务/长任务,`job_output` 工具与 `/jobs` 查看
+- **配置文件** — `~/.supa/config.json` + 项目 `.supa/config.json` (model/effort/yolo/bash_allow),优先级 CLI > 环境变量 > 项目 > 全局
+- **子代理类型** — `.supa/agents/<名称>.md` 定义角色指令,task 工具 `agent_type` 参数选用
 - **Skills** — `.supa/skills/*/SKILL.md` 自动发现进系统提示,`/skills` 查看
 - **斜杠命令** — `/exit`、`/reset`、`/model`、`/effort`、`/cwd`、`/skills`、`/memory`、`/todos`、`/help`
 - **轻依赖** — 核心仅用 Python 标准库,TUI 只需 prompt_toolkit
@@ -118,8 +124,9 @@ export LLM_BASE_URL=https://api.deepseek.com/v1 LLM_MODEL=deepseek-v4-pro
 | `list_dir` | 列出目录内容 |
 | `grep` | 正则搜索文件内容 |
 | `todo_write` | 维护任务清单, 终端实时渲染 ☐ ◐ ☑ |
-| `task` | 派生子代理独立完成子任务, 回传结果摘要 (子代理不能再派生) |
-| `remember` | 追加事实到项目记忆 SUPA.md |
+| `task` | 派生子代理独立完成子任务, 回传结果摘要 (可选 agent_type, 不能再派生) |
+| `job_output` | 查看后台任务状态与输出 |
+| `remember` | 追加事实到项目记忆 AGENTS.md/SUPA.md |
 
 ## 记忆 / Skills / 任务系统
 

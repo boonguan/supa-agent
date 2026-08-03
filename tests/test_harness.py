@@ -343,6 +343,72 @@ def test_session_persistence(tmp):
     assert agent2.cwd == tmp  # cwd 一并恢复
 
 
+def test_agents_md_and_custom_agents(tmp):
+    from harness.context import discover_agents, memory_path
+
+    # 无记忆文件时 remember 新建 AGENTS.md; 已有 SUPA.md 则继续写 SUPA.md
+    assert memory_path(tmp).name == "AGENTS.md"
+    (Path(tmp) / "SUPA.md").write_text("- 旧记忆\n", encoding="utf-8")
+    assert memory_path(tmp).name == "SUPA.md"
+    (Path(tmp) / "AGENTS.md").write_text("# 规范\n- 用中文\n", encoding="utf-8")
+    assert memory_path(tmp).name == "AGENTS.md"  # 两者都有时优先 AGENTS.md
+    memory = load_memory(tmp)
+    assert "用中文" in memory and "旧记忆" in memory
+
+    # 自定义子代理类型
+    agents_dir = Path(tmp) / ".supa" / "agents"
+    agents_dir.mkdir(parents=True)
+    (agents_dir / "reviewer.md").write_text("---\nname: reviewer\ndescription: 代码审查\n---\n只报缺陷, 不夸代码。", encoding="utf-8")
+    agents = discover_agents(tmp)
+    assert agents[0]["name"] == "reviewer" and "只报缺陷" in agents[0]["prompt"]
+    assert "reviewer" in build_system_prompt("m", tmp)
+
+    # task 用类型化子代理: 子代理 system prompt 带角色指令
+    import contextlib
+    import io
+
+    from harness.tools import task as task_tool
+
+    llm = FakeLLM([("审查完成", None)])
+    agent = Agent(llm, cwd=tmp)
+    with contextlib.redirect_stdout(io.StringIO()):
+        result = task_tool(agent, "审查", "审查这段代码", agent_type="reviewer")
+    assert result == "审查完成"
+    assert "未定义的子代理类型" in task_tool(agent, "x", "y", agent_type="不存在")
+
+
+def test_bash_background_and_jobs(tmp):
+    import time
+
+    from harness.tools import job_output, run_bash
+
+    agent = Agent(FakeLLM([]), cwd=tmp)
+    out = run_bash(agent, "echo hello-bg; sleep 0.1", background=True)
+    assert "后台任务 #1" in out
+    for _ in range(50):
+        if agent.jobs[0]["proc"].poll() is not None:
+            break
+        time.sleep(0.05)
+    report = job_output(agent, 1)
+    assert "hello-bg" in report and "已结束" in report
+    assert "没有后台任务" in job_output(agent, 99)
+    # 超时参数
+    assert "超时 (1s)" in run_bash(agent, "sleep 5", timeout=1)
+
+
+def test_config(tmp):
+    from harness.config import load_config
+
+    proj = Path(tmp) / ".supa"
+    proj.mkdir(parents=True)
+    (proj / "config.json").write_text(json.dumps({"model": "deepseek-v4-pro", "bash_allow": ["docker ps"]}), encoding="utf-8")
+    cfg = load_config(tmp)
+    assert cfg["model"] == "deepseek-v4-pro"
+    p = Policy(extra_prefixes=cfg["bash_allow"])
+    assert p.check("bash", {"command": "docker ps -a"}, False) == "allow"
+    assert p.check("bash", {"command": "docker rm x"}, False) == "ask"
+
+
 def test_effort_per_model():
     from harness.llm import LLM, supported_efforts
 
@@ -454,7 +520,8 @@ def main():
     for fn in (test_memory_and_skills, test_agent_loop_with_tools, test_edit_file_guards, test_subagent,
                test_reasoning_collapse, test_policy, test_interrupt_cleanup, test_env_context,
                test_usage_and_compact, test_session_persistence,
-               test_parallel_readonly_tools, test_grep_and_read_offset):
+               test_parallel_readonly_tools, test_grep_and_read_offset,
+               test_agents_md_and_custom_agents, test_bash_background_and_jobs, test_config):
         with tempfile.TemporaryDirectory() as tmp:
             fn(tmp)
     print("所有测试通过")

@@ -9,6 +9,7 @@ from harness.agent import Agent
 from harness.context import discover_skills, load_memory
 from harness.llm import LLM, LLMError, SUPPORTED_MODELS, supported_efforts
 from harness.policy import Policy
+from harness.config import load_config
 from harness.session import list_sessions
 from harness.session import load as load_session
 from harness.ui import C, print_todos
@@ -32,6 +33,8 @@ HELP = """命令:
   /reasoning        展开/折叠思维链显示 (默认折叠为进度行)
   /verbose          切换工具结果显示: 折叠单行 (默认) / 多行预览
   /output [n]       查看倒数第 n 条工具调用的完整输出 (默认最近一条)
+  /jobs             查看后台任务 (bash background=true)
+  /cost             查看本会话 token 用量
   /compact          手动压缩对话历史 (上下文超 70% 会自动压缩)
   /sessions         列出最近保存的会话
   /resume [id]      恢复会话 (默认最近一个), 也可启动时 supa --resume
@@ -96,6 +99,22 @@ def handle_command(agent, line):
             print_todos(agent.todos)
         else:
             print("当前没有任务清单")
+    elif line == "/jobs":
+        if not agent.jobs:
+            print("没有后台任务 (bash 加 background=true 启动)")
+        for j in agent.jobs:
+            code = j["proc"].poll()
+            status = f"{C.GREEN}运行中{C.RESET}" if code is None else f"{C.DIM}已结束 ({code}){C.RESET}"
+            print(f"  #{j['id']} {status}  {j['command'][:80]}  {C.DIM}{j['outfile']}{C.RESET}")
+    elif line == "/cost":
+        t = agent.total_usage
+        if not t:
+            print("本会话还没有 API 调用")
+        else:
+            print(f"请求 {t.get('requests', 0)} 次 · 输入 {t.get('prompt_tokens', 0):,} · "
+                  f"输出 {t.get('completion_tokens', 0):,} (其中思考 {t.get('reasoning_tokens', 0):,}) tokens")
+            if agent.context_used():
+                print(f"当前上下文占用: {agent.context_used():.0%} / {agent.llm.context_window():,} tokens")
     elif line == "/compact":
         try:
             if agent.compact():
@@ -200,16 +219,24 @@ def main():
                     help="恢复会话 (不带 ID 则恢复最近一个)")
     args = ap.parse_args()
 
+    cwd = str(Path(args.dir).resolve())
+    cfg = load_config(cwd)  # 优先级: CLI > 环境变量 (LLM 内部 fallback) > 项目/全局配置
     try:
-        llm = LLM(base_url=args.base_url, api_key=args.api_key, model=args.model)
-        if args.effort:
-            llm.effort = args.effort.lower()
+        llm = LLM(
+            base_url=args.base_url or os.environ.get("LLM_BASE_URL") or cfg.get("base_url"),
+            api_key=args.api_key or os.environ.get("LLM_API_KEY") or cfg.get("api_key"),
+            model=args.model or os.environ.get("LLM_MODEL") or cfg.get("model"),
+        )
+        effort = args.effort or os.environ.get("LLM_EFFORT") or cfg.get("effort")
+        if effort:
+            llm.effort = effort.lower()
     except LLMError as e:
         print(f"错误: {e}", file=sys.stderr)
         print("需要设置环境变量 LLM_API_KEY, 可选 LLM_BASE_URL / LLM_MODEL, 详见 README", file=sys.stderr)
         sys.exit(1)
 
-    agent = Agent(llm, cwd=str(Path(args.dir).resolve()), policy=Policy(yolo=args.yolo))
+    policy = Policy(yolo=args.yolo or cfg.get("yolo", False), extra_prefixes=cfg.get("bash_allow", ()))
+    agent = Agent(llm, cwd=cwd, policy=policy)
     if args.resume:
         sessions = list_sessions()
         sid = sessions[0]["id"] if args.resume == "latest" and sessions else args.resume
