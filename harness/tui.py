@@ -21,7 +21,7 @@ _widgets_base.Border.TOP_RIGHT = "╮"
 _widgets_base.Border.BOTTOM_LEFT = "╰"
 _widgets_base.Border.BOTTOM_RIGHT = "╯"
 
-COMMANDS = ["/exit", "/reset", "/model", "/effort", "/cwd", "/skills", "/memory", "/todos", "/help"]
+COMMANDS = ["/exit", "/reset", "/model", "/effort", "/cwd", "/skills", "/memory", "/todos", "/reasoning", "/help"]
 
 PLACEHOLDER = "输入任务, / 查看命令 · Enter 发送 · Alt+Enter 换行"
 

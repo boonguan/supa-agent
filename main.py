@@ -26,6 +26,7 @@ HELP = """命令:
   /skills           列出可用 skills (.supa/skills/*/SKILL.md)
   /memory           查看项目记忆 (SUPA.md)
   /todos            查看当前任务清单
+  /reasoning        展开/折叠思维链显示 (默认折叠为进度行)
   /help             显示帮助
 其余输入都会作为任务发给 agent"""
 
@@ -87,6 +88,9 @@ def handle_command(agent, line):
             print_todos(agent.todos)
         else:
             print("当前没有任务清单")
+    elif line == "/reasoning":
+        agent.show_reasoning = not agent.show_reasoning
+        print(f"思维链显示: {'展开' if agent.show_reasoning else '折叠'}")
     else:
         return None
     return True

@@ -108,6 +108,42 @@ def test_subagent(tmp):
     assert all(t.name != "task" for t in sub.tools)
 
 
+def test_markdown_render():
+    import contextlib
+    import io
+
+    from harness.ui import render_markdown
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        render_markdown("## 标题\n**加粗** 和 `代码`\n- 列表项\n| 名字 | 值 |\n|---|---|\n| 甲 | 1 |\n```\ncode here\n```")
+    out = buf.getvalue()
+    assert "##" not in out and "**" not in out and "|---|" not in out  # 标记被消化
+    assert "标题" in out and "\033[1m加粗" in out and "• 列表项" in out
+    assert "甲" in out and "code here" in out
+
+
+def test_reasoning_collapse(tmp):
+    import contextlib
+    import io
+
+    llm = FakeLLM([("你好", None)])
+    agent = Agent(llm, cwd=tmp)
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        agent.chat("hi")
+    out = buf.getvalue()
+    assert "已思考" in out and "想一想" not in out  # 默认折叠
+
+    llm2 = FakeLLM([("你好", None)])
+    agent2 = Agent(llm2, cwd=tmp)
+    agent2.show_reasoning = True
+    buf2 = io.StringIO()
+    with contextlib.redirect_stdout(buf2):
+        agent2.chat("hi")
+    assert "想一想" in buf2.getvalue()  # 展开时输出原文
+
+
 def test_effort_per_model():
     from harness.llm import LLM, supported_efforts
 
@@ -159,9 +195,10 @@ def test_tui():
 
 def main():
     test_tool_registry()
+    test_markdown_render()
     test_effort_per_model()
     test_tui()
-    for fn in (test_memory_and_skills, test_agent_loop_with_tools, test_edit_file_guards, test_subagent):
+    for fn in (test_memory_and_skills, test_agent_loop_with_tools, test_edit_file_guards, test_subagent, test_reasoning_collapse):
         with tempfile.TemporaryDirectory() as tmp:
             fn(tmp)
     print("所有测试通过")

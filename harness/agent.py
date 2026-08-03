@@ -2,7 +2,7 @@ import json
 
 from .context import build_system_prompt
 from .tools import TOOLS
-from .ui import C, result_preview, tool_line
+from .ui import C, MdStream, result_preview, tool_line
 
 
 class _ToolAccumulator:
@@ -61,6 +61,7 @@ class Agent:
         self.max_steps = max_steps
         self.depth = depth
         self.todos = []
+        self.show_reasoning = False  # 思维链默认折叠, /reasoning 切换
         self.messages = [{"role": "system", "content": build_system_prompt(llm.model, cwd)}]
 
     def set_model(self, name):
@@ -96,24 +97,36 @@ class Agent:
             for t in self.tools
         ]
 
+    def _end_reasoning(self, reasoning):
+        if self.show_reasoning:
+            print()
+        else:  # 收起进度行
+            print(f"\r{C.DIM}✱ 已思考 ({sum(len(r) for r in reasoning)} 字){' ' * 12}{C.RESET}")
+
     def _stream(self):
         content, reasoning = [], []
         accumulator = _ToolAccumulator()
+        md = MdStream() if self.depth == 0 else None  # 正文按行渲染 markdown; 子代理不刷屏
         for chunk in self.llm.chat_stream(self.messages, tools=self.schemas):
             delta = chunk["choices"][0].get("delta", {})
             if delta.get("reasoning_content"):
                 reasoning.append(delta["reasoning_content"])
-                if self.depth == 0:  # 思维链暗色显示
-                    print(f"{C.DIM}{delta['reasoning_content']}{C.RESET}", end="", flush=True)
+                if md:
+                    if self.show_reasoning:
+                        print(f"{C.DIM}{delta['reasoning_content']}{C.RESET}", end="", flush=True)
+                    else:
+                        print(f"\r{C.DIM}✱ 思考中… {sum(len(r) for r in reasoning)} 字{C.RESET}", end="", flush=True)
             if delta.get("content"):
-                if reasoning and not content and self.depth == 0:
-                    print()  # 思维链与正文之间空一行
+                if md and reasoning and not content:
+                    self._end_reasoning(reasoning)
                 content.append(delta["content"])
-                if self.depth == 0:  # 子代理不刷屏, 只回传最终结果
-                    print(delta["content"], end="", flush=True)
+                if md:
+                    md.feed(delta["content"])
             accumulator.add(delta)
-        if self.depth == 0 and (content or reasoning):
-            print()
+        if md:
+            if reasoning and not content:
+                self._end_reasoning(reasoning)
+            md.close()
         return "".join(content), "".join(reasoning), accumulator.to_calls()
 
     def _assistant_message(self, content, reasoning, tool_calls=None):
