@@ -80,6 +80,9 @@ def test_agent_loop_with_tools(tmp):
     # DeepSeek 思考模式: assistant 消息必须回传 reasoning_content
     assert all(m["reasoning_content"] == "想一想" for m in agent.messages if m["role"] == "assistant")
     assert agent.messages[-1]["content"] == "完成"
+    # 工具日志供 /output 回看
+    assert [t[0] for t in agent.tool_log] == ["todo_write", "edit_file"]
+    assert "已修改" in agent.tool_log[-1][2]
 
 
 def test_edit_file_guards(tmp):

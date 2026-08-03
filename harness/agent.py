@@ -2,7 +2,7 @@ import json
 
 from .context import build_system_prompt
 from .tools import TOOLS
-from .ui import C, MdStream, result_preview, tool_line
+from .ui import C, MdStream, result_collapsed, result_preview, tool_line
 
 
 class _ToolAccumulator:
@@ -70,6 +70,8 @@ class Agent:
         self.depth = depth
         self.todos = []
         self.show_reasoning = False  # 思维链默认折叠, /reasoning 切换
+        self.verbose = False  # 工具结果默认折叠单行, /verbose 切换预览
+        self.tool_log = []  # (name, summary, result), /output 回看
         self.messages = [{"role": "system", "content": build_system_prompt(llm.model, cwd)}]
 
     def set_model(self, name):
@@ -170,7 +172,8 @@ class Agent:
                 except json.JSONDecodeError:
                     args = {}
                 fn = next((t for t in self.tools if t.name == name), None)
-                tool_line(name, _arg_summary(name, args), depth=self.depth)
+                summary = _arg_summary(name, args)
+                tool_line(name, summary, depth=self.depth)
                 if fn is None:
                     result = f"未知工具: {name}"
                 else:
@@ -178,8 +181,13 @@ class Agent:
                         result = fn(self, **args)
                     except Exception as e:
                         result = f"工具出错: {type(e).__name__}: {e}"
+                self.tool_log.append((name, summary, result))
+                del self.tool_log[:-50]
                 if name not in ("todo_write", "edit_file"):  # 这两个工具自带渲染
-                    result_preview(result, depth=self.depth)
+                    if self.verbose:
+                        result_preview(result, depth=self.depth)
+                    else:
+                        result_collapsed(result, depth=self.depth)
                 self.messages.append(
                     {"role": "tool", "tool_call_id": call["id"], "content": result}
                 )

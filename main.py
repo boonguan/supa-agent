@@ -27,6 +27,8 @@ HELP = """命令:
   /memory           查看项目记忆 (SUPA.md)
   /todos            查看当前任务清单
   /reasoning        展开/折叠思维链显示 (默认折叠为进度行)
+  /verbose          切换工具结果显示: 折叠单行 (默认) / 多行预览
+  /output [n]       查看倒数第 n 条工具调用的完整输出 (默认最近一条)
   /help             显示帮助
 其余输入都会作为任务发给 agent"""
 
@@ -91,6 +93,21 @@ def handle_command(agent, line):
     elif line == "/reasoning":
         agent.show_reasoning = not agent.show_reasoning
         print(f"思维链显示: {'展开' if agent.show_reasoning else '折叠'}")
+    elif line == "/verbose":
+        agent.verbose = not agent.verbose
+        print(f"工具结果显示: {'多行预览' if agent.verbose else '折叠单行'}")
+    elif line == "/output" or line.startswith("/output "):
+        if not agent.tool_log:
+            print("还没有工具调用记录")
+        else:
+            arg = line[8:].strip()
+            n = int(arg) if arg.isdigit() and int(arg) >= 1 else 1
+            if n > len(agent.tool_log):
+                print(f"只有 {len(agent.tool_log)} 条记录")
+            else:
+                name, summary, result = agent.tool_log[-n]
+                print(f"{C.GREEN}●{C.RESET} {C.BOLD}{name}{C.RESET} {C.DIM}{summary}{C.RESET}")
+                print(result)
     else:
         return None
     return True

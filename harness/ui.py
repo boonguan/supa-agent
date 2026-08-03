@@ -1,5 +1,6 @@
 import difflib
 import re
+import shutil
 import unicodedata
 
 
@@ -16,10 +17,32 @@ class C:
     BLUE = "\033[34m"
 
 
+def _truncate_width(s, maxw):
+    """按显示宽度截断 (CJK 记 2 列), 超出加 …"""
+    w = 0
+    for i, ch in enumerate(s):
+        w += 2 if unicodedata.east_asian_width(ch) in "WF" else 1
+        if w > maxw:
+            return s[:i] + "…"
+    return s
+
+
 def tool_line(name, summary, depth=0):
-    """opencode 风格工具调用行: ● tool 参数摘要"""
+    """opencode 风格工具调用行: ● tool 参数摘要 (单行截断)"""
     indent = "  " * depth
-    print(f"{indent}{C.GREEN}●{C.RESET} {C.BOLD}{name}{C.RESET} {C.DIM}{summary[:160]}{C.RESET}")
+    width = shutil.get_terminal_size().columns - len(indent) - len(name) - 4
+    summary = " ".join(summary.split())  # 多行命令压成一行
+    print(f"{indent}{C.GREEN}●{C.RESET} {C.BOLD}{name}{C.RESET} {C.DIM}{_truncate_width(summary, max(width, 20))}{C.RESET}")
+
+
+def result_collapsed(text, depth=0):
+    """默认折叠: 结果首行 + 剩余行数, /output 可回看全文"""
+    indent = "  " * depth
+    lines = str(text).splitlines() or [""]
+    width = shutil.get_terminal_size().columns - len(indent) - 12
+    head = _truncate_width(lines[0], max(width, 20))
+    more = f" +{len(lines) - 1} 行" if len(lines) > 1 else ""
+    print(f"{indent}  {C.DIM}└ {head}{more}{C.RESET}")
 
 
 def result_preview(text, max_lines=4, depth=0):
