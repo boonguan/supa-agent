@@ -35,6 +35,14 @@ class _ToolAccumulator:
         return calls
 
 
+def _est_tokens(text):
+    """粗估 token 数: 中日韩字符约 0.6 token/字, 其余约 4 字符/token。"""
+    import unicodedata
+
+    cjk = sum(1 for c in text if unicodedata.east_asian_width(c) in "WF")
+    return max(1, int(cjk * 0.6 + (len(text) - cjk) / 4))
+
+
 def _arg_summary(name, args):
     """每种工具挑最关键的参数做单行摘要。"""
     if name == "bash":
@@ -97,25 +105,34 @@ class Agent:
             for t in self.tools
         ]
 
-    def _end_reasoning(self, reasoning):
+    def _end_reasoning(self, reasoning, usage=None):
         if self.show_reasoning:
             print()
-        else:  # 收起进度行
-            print(f"\r{C.DIM}✱ 已思考 ({sum(len(r) for r in reasoning)} 字){' ' * 12}{C.RESET}")
+            return
+        # 收起进度行: usage 里有真实 reasoning_tokens 就用, 没有 (正文已开始/端点不支持) 用估算
+        tokens = (usage or {}).get("completion_tokens_details", {}).get("reasoning_tokens")
+        label = f"{tokens} tokens" if tokens else f"~{_est_tokens(''.join(reasoning))} tokens"
+        print(f"\r{C.DIM}✱ 已思考 ({label}){' ' * 12}{C.RESET}")
 
     def _stream(self):
         content, reasoning = [], []
+        usage = None
         accumulator = _ToolAccumulator()
         md = MdStream() if self.depth == 0 else None  # 正文按行渲染 markdown; 子代理不刷屏
         for chunk in self.llm.chat_stream(self.messages, tools=self.schemas):
-            delta = chunk["choices"][0].get("delta", {})
+            if chunk.get("usage"):
+                usage = chunk["usage"]
+            choices = chunk.get("choices") or []
+            if not choices:  # include_usage 的末尾 chunk 没有 choices
+                continue
+            delta = choices[0].get("delta", {})
             if delta.get("reasoning_content"):
                 reasoning.append(delta["reasoning_content"])
                 if md:
                     if self.show_reasoning:
                         print(f"{C.DIM}{delta['reasoning_content']}{C.RESET}", end="", flush=True)
                     else:
-                        print(f"\r{C.DIM}✱ 思考中… {sum(len(r) for r in reasoning)} 字{C.RESET}", end="", flush=True)
+                        print(f"\r{C.DIM}✱ 思考中… ~{_est_tokens(''.join(reasoning))} tokens{C.RESET}", end="", flush=True)
             if delta.get("content"):
                 if md and reasoning and not content:
                     self._end_reasoning(reasoning)
@@ -125,7 +142,7 @@ class Agent:
             accumulator.add(delta)
         if md:
             if reasoning and not content:
-                self._end_reasoning(reasoning)
+                self._end_reasoning(reasoning, usage)
             md.close()
         return "".join(content), "".join(reasoning), accumulator.to_calls()
 

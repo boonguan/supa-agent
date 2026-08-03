@@ -78,6 +78,7 @@ class LLM:
             payload["tools"] = tools
         if stream:
             payload["stream"] = True
+            payload["stream_options"] = {"include_usage": True}  # 末尾 chunk 带 usage (token 统计)
         effort = self.effective_effort()
         if effort == "none":
             payload["thinking"] = {"type": "disabled"}

@@ -37,6 +37,8 @@ class FakeLLM:
                     }
                 )
             yield {"choices": [{"delta": {"tool_calls": deltas}}]}
+        # include_usage 的末尾 chunk: 无 choices, 只有 usage
+        yield {"choices": [], "usage": {"completion_tokens_details": {"reasoning_tokens": 7}}}
 
 
 def test_tool_registry():
@@ -133,7 +135,7 @@ def test_reasoning_collapse(tmp):
     with contextlib.redirect_stdout(buf):
         agent.chat("hi")
     out = buf.getvalue()
-    assert "已思考" in out and "想一想" not in out  # 默认折叠
+    assert "已思考" in out and "tokens" in out and "想一想" not in out  # 默认折叠, 显示 token 数
 
     llm2 = FakeLLM([("你好", None)])
     agent2 = Agent(llm2, cwd=tmp)
@@ -162,7 +164,13 @@ def test_effort_per_model():
     assert llm.effective_effort() is None
     assert "reasoning_effort" not in llm._payload([])  # 不支持的模型不发参数
     llm.model, llm.effort = "deepseek-v4-pro", "max"
-    assert llm._payload([], stream=True) == {"model": "deepseek-v4-pro", "messages": [], "stream": True, "reasoning_effort": "max"}
+    assert llm._payload([], stream=True) == {
+        "model": "deepseek-v4-pro",
+        "messages": [],
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        "reasoning_effort": "max",
+    }
 
 
 def test_tui():
