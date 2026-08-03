@@ -278,11 +278,11 @@ class Agent:
                 if fn is None:
                     result = f"未知工具: {name}"
                 else:
-                    allowed = True
+                    allowed, deny_msg = True, ""
                     if self.policy.check(name, args, getattr(fn, "readonly", False)) == "ask":
-                        allowed = self._resolve_permission(name, args, summary)
+                        allowed, deny_msg = self._resolve_permission(name, args, summary)
                     if not allowed:
-                        result = "用户拒绝执行该操作, 请改用其他方式或询问用户"
+                        result = deny_msg
                     else:
                         try:
                             result = fn(self, **args)
@@ -320,40 +320,46 @@ class Agent:
         """让模型审批一次操作。返回 (是否允许, 原因)。审核失败按拒绝处理。"""
         old_effort = self.llm.effort
         self.llm.effort = "none"  # 审批不需要思考, 求快
+        text = ""
         try:
-            resp = self.llm.chat([{
-                "role": "user",
-                "content": self.AUTO_REVIEW_PROMPT.format(
-                    cwd=self.cwd, name=name, args=json.dumps(args, ensure_ascii=False)[:1000]),
-            }])
-            text = (resp["choices"][0]["message"]["content"] or "").strip()
+            for _ in range(2):  # 偶发空响应, 重试一次
+                resp = self.llm.chat([{
+                    "role": "user",
+                    "content": self.AUTO_REVIEW_PROMPT.format(
+                        cwd=self.cwd, name=name, args=json.dumps(args, ensure_ascii=False)[:1000]),
+                }])
+                text = (resp["choices"][0]["message"]["content"] or "").strip()
+                if text:
+                    break
         except Exception as e:
             return False, f"审核请求失败: {type(e).__name__}"
         finally:
             self.llm.effort = old_effort
-        lines = text.splitlines() or [""]
+        if not text:
+            return False, "审核响应为空"
+        lines = text.splitlines()
         ok = lines[0].strip().upper().startswith("ALLOW")
         reason = (lines[1] if len(lines) > 1 else lines[0]).strip()[:120]
         return ok, reason
 
     def _resolve_permission(self, name, args, summary):
-        """决定一次 ask 级操作是否放行: 自动审核 (开启时) -> 人工确认。"""
-        if self.policy.auto:
+        """决定一次 ask 级操作是否放行。返回 (是否放行, 拒绝时回传给模型的消息)。
+        auto 模式下由模型审批, 拒绝直接把原因回传给 agent 自行调整, 不再人工确认。"""
+        def auto_review(prefix=""):
             ok, reason = self._auto_review(name, args)
-            self.ui.notice(f"🛡 自动审核{'通过' if ok else '拒绝'}: {reason}")
-            if ok:
-                return True
-            # 模型拒绝 -> 升级人工确认
+            self.ui.notice(f"🛡 {prefix}自动审核{'通过' if ok else '拒绝'}: {reason}")
+            return ok, f"自动审核拒绝该操作 ({reason}), 请改用其他方式或说明理由后重试"
+
+        if self.policy.auto:
+            return auto_review()
         answer = self.ui.confirm(name, summary, self.depth)
         if answer == "auto":
             self.policy.auto = True
-            ok, reason = self._auto_review(name, args)
-            self.ui.notice(f"🛡 自动审核已开启, 本次{'通过' if ok else '拒绝'}: {reason}")
-            return ok
+            return auto_review(prefix="自动审核已开启, 本次")
         if answer == "a":
             self.policy.remember(name, args)
-            return True
-        return answer == "y"
+            return True, ""
+        return answer == "y", "用户拒绝执行该操作, 请改用其他方式或询问用户"
 
     def _parallel_round(self, parsed):
         """一轮全是只读工具 (task 除外) 时并发执行, 结果按原顺序回填。"""

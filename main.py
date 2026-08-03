@@ -33,7 +33,8 @@ HELP = """命令:
   /reasoning        展开/折叠思维链显示 (默认折叠为进度行)
   /verbose          切换工具结果显示: 折叠单行 (默认) / 多行预览
   /output [n]       查看倒数第 n 条工具调用的完整输出 (默认最近一条)
-  /auto             开关自动审核 (修改类操作由模型审批, 拒绝时升级人工确认)
+  /auto             开关自动审核 (修改类操作由模型审批, 拒绝原因回传给 agent)
+  shift+tab         循环权限模式: 手动确认 -> 自动审核 -> yolo
   /jobs             查看后台任务 (bash background=true)
   /cost             查看本会话 token 用量
   /compact          手动压缩对话历史 (上下文超 70% 会自动压缩)

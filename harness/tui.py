@@ -1,5 +1,7 @@
 import contextlib
 import io
+import shutil
+import subprocess
 import threading
 
 from prompt_toolkit.application import Application
@@ -10,12 +12,11 @@ from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, Window
-from prompt_toolkit.layout.margins import ScrollbarMargin
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import AfterInput, BeforeInput, ConditionalProcessor
-from prompt_toolkit.mouse_events import MouseEventType
+from prompt_toolkit.mouse_events import MouseButton, MouseEventType
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Frame
 from prompt_toolkit.widgets import base as _widgets_base
@@ -46,6 +47,7 @@ STYLE = Style.from_dict(
         "status.model": "#34d399",
         "status.effort": "#fbbf24",
         "status.cwd": "#93c5fd",
+        "status.yolo": "bold #f87171",
         "tool.bullet": "#34d399",
         "tool.name": "bold",
         "dim": "#6b7280",
@@ -54,8 +56,33 @@ STYLE = Style.from_dict(
         "approval": "bold #fbbf24",
         "approval.option": "#d1d5db",
         "approval.selected": "bg:#374151 bold #fbbf24",
+        "selected": "reverse",
     }
 )
+
+
+def cycle_mode(policy):
+    """shift+tab 循环权限模式 (对齐 CC): 手动确认 -> 自动审核 -> yolo -> 手动确认。返回新模式名。"""
+    if policy.yolo:
+        policy.yolo = policy.auto = False
+        return "手动确认"
+    if policy.auto:
+        policy.auto, policy.yolo = False, True
+        return "yolo (全放行)"
+    policy.auto = True
+    return "自动审核"
+
+
+def _copy_to_clipboard(text):
+    """复制到系统剪贴板 (鼠标框选被 TUI 捕获, 终端原生选择不可用, 只能自己写剪贴板)。"""
+    for cmd in (["pbcopy"], ["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "-bi"]):
+        if shutil.which(cmd[0]):
+            try:
+                subprocess.run(cmd, input=text.encode("utf-8"), timeout=5, check=True)
+                return True
+            except (OSError, subprocess.SubprocessError):
+                return False
+    return False
 
 
 class SlashCompleter(Completer):
@@ -106,6 +133,10 @@ class TranscriptUI:
         self.follow = True  # 跟随底部: 光标锚点放末行, Window 自动滚动保持可见
         self.anchor = 0  # 不跟随时的锚点行号
         self.total_lines = 0  # 上次渲染的总行数
+        self.sel = None  # 鼠标框选 [(行,列), (行,列)], 视口内容坐标
+        self.sel_dragging = False  # 按下后是否真的拖动过 (区分单击)
+        self.flash = ""  # 状态栏一次性提示 (如 "已复制")
+        self._last_out = []  # 上一帧渲染的 fragments, 框选取文本用
         self.on_change = lambda: None  # 新内容产生: 重绘并跟随底部
         self.on_redraw = lambda: None  # 仅重绘 (展开/折叠等), 不动滚动位置
 
@@ -204,6 +235,7 @@ class TranscriptUI:
         self.blocks.append(block)
         self._approval_event.clear()
         self.pending = block
+        self.follow = True  # 确认菜单必须出现在屏幕上
         self.on_change()
         self._approval_event.wait()
         self.pending = None
@@ -215,17 +247,26 @@ class TranscriptUI:
             self.pending["answer"] = answer
             self._approval_event.set()
 
+    @staticmethod
+    def _page_lines():
+        """估算会话区可见行数 (终端高度减输入框/状态栏; 折行行会偏大, 只影响临界体验)。"""
+        import shutil as _shutil
+
+        return max(1, _shutil.get_terminal_size().lines - 4)
+
     def scroll(self, delta):
-        """移动锚点行 (滚轮/PgUp/PgDn 共用): 向上先脱离跟随, 滚到底自动恢复跟随。"""
+        """移动锚点行 (滚轮/PgUp/PgDn 共用): 向上先脱离跟随, 滚到底自动恢复跟随。
+        非跟随时锚点=视口首行, 每动一行画面必动 (锚点只要还在屏内 Window 就不滚, 会有死区)。"""
+        self.sel = None  # 视口一动坐标就失效
         if delta < 0:
             if self.follow:
                 self.follow = False
-                self.anchor = max(0, self.total_lines - 1)
+                self.anchor = max(0, self.total_lines - self._page_lines())
             self.anchor = max(0, self.anchor + delta)
         else:
             self.anchor += delta
-            if self.anchor >= self.total_lines - 1:
-                self.follow = True
+            if self.anchor >= self.total_lines - self._page_lines():
+                self.follow = True  # 剩余内容不足一屏: 恢复跟随底部
         self.on_redraw()
 
     # --- 渲染 ---
@@ -295,13 +336,14 @@ class TranscriptUI:
             total += cached[2]
         self.total_lines = total
 
-        # 视口窗口: follow 时取末尾, 否则以锚点为中心
+        # 视口窗口: follow 时取末尾 (锚点在末行, 底部对齐); 否则从锚点行开始渲染,
+        # 锚点即视口首行, 锚点动一行内容就整体移一行, 滚动无死区
         if self.follow or total == 0:
             target = max(total - 1, 0)
             lo = max(0, total - self.VIEW_LINES)
         else:
             target = min(max(self.anchor, 0), total - 1)
-            lo = max(0, target - self.VIEW_LINES // 2)
+            lo = target
         hi = min(total, lo + self.VIEW_LINES)
 
         out = []
@@ -318,9 +360,56 @@ class TranscriptUI:
         for i, f in enumerate(out):
             if acc >= local:
                 out.insert(i, marker)
-                return out
+                break
             acc += f[1].count("\n")
-        out.append(marker)
+        else:
+            out.append(marker)
+        self._last_out = out
+        if self.sel is not None and self.sel_dragging:
+            out = self._highlight(out)
+        return out
+
+    def selected_text(self):
+        """按框选坐标从上一帧 fragments 抠出纯文本 (行=视口行, 列=行内字符序号)。"""
+        if self.sel is None:
+            return ""
+        (r1, c1), (r2, c2) = sorted(self.sel)
+        lines = "".join(f[1] for f in self._last_out).split("\n")[r1:r2 + 1]
+        if not lines:
+            return ""
+        if r1 == r2:
+            return lines[0][c1:c2 + 1]
+        lines[0] = lines[0][c1:]
+        lines[-1] = lines[-1][:c2 + 1]
+        return "\n".join(lines)
+
+    def _highlight(self, frags):
+        """给框选范围内的字符叠加 class:selected (reverse)。"""
+        (start, end) = sorted(self.sel)
+        out = []
+        row, col = 0, 0
+        for f in frags:
+            style, text = f[0], f[1]
+            if not text:
+                out.append(f)
+                continue
+            run, run_sel = "", None
+            parts = []
+            for ch in text:
+                s = start <= (row, col) <= end and ch != "\n"
+                if ch == "\n":
+                    row, col = row + 1, 0
+                else:
+                    col += 1
+                if run_sel is None or s == run_sel:
+                    run, run_sel = run + ch, s
+                else:
+                    parts.append((run_sel, run))
+                    run, run_sel = ch, s
+            parts.append((run_sel, run))
+            for s, txt in parts:
+                if txt:
+                    out.append((style + " class:selected" if s else style, txt) + tuple(f[2:]))
         return out
 
     def _emit_block(self, b, frags):
@@ -375,14 +464,24 @@ class TranscriptUI:
 
 def _status_fragments(agent, running):
     effort = agent.llm.effective_effort()
-    if getattr(agent.ui, "pending", None) is not None:
+    if getattr(agent.ui, "flash", ""):
+        hint = f"  ·  {agent.ui.flash}"
+    elif getattr(agent.ui, "pending", None) is not None:
         hint = "  ·  等待选择: ↑↓+Enter / 数字键 / 点击"
     elif running[0]:
         hint = "  ·  运行中 (ctrl-c 中断)"
     else:
-        hint = "  ·  点击 ▸ 展开 · 滚轮/PgUp/PgDn 滚动"
+        hint = "  ·  ⇧tab 切模式 · 点击 ▸ 展开 · 拖选即复制"
+    if agent.policy.yolo:
+        mode = ("class:status.yolo", " ⚡ yolo")
+    elif agent.policy.auto:
+        mode = ("class:status.effort", " 🛡 auto")
+    else:
+        mode = ("class:status", " ✋ 确认")
     frags = [
-        ("class:status.model", f" {agent.llm.model}"),
+        mode,
+        ("class:status", "  ·  "),
+        ("class:status.model", f"{agent.llm.model}"),
         ("class:status", "  ·  "),
         ("class:status.effort", f"effort: {effort or '不支持'}"),
         ("class:status", "  ·  "),
@@ -404,20 +503,45 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
 
     # Window 只渲染可视区 (整屏虚拟渲染在长会话下每帧数秒); 滚动由 fragments 里的
     # [SetCursorPosition] 锚点驱动: Window 自动滚动保持锚点可见。
-    # 滚轮不能走 Window 自带滚动 (内容是虚拟视口), 必须改锚点
+    # 滚轮不能走 Window 自带滚动 (内容是虚拟视口), 必须改锚点。
+    # 框选: 终端原生选择被鼠标捕获挡掉了, 自己实现 按下-拖动高亮-松开即复制;
+    # 单击 (无拖动) 仍走原来的展开/折叠
+    def _wheel(mouse_event):
+        """滚轮事件 -> 锚点滚动。返回 True 表示已处理。"""
+        if mouse_event.event_type == MouseEventType.SCROLL_UP:
+            ui.scroll(-3)
+        elif mouse_event.event_type == MouseEventType.SCROLL_DOWN:
+            ui.scroll(3)
+        else:
+            return False
+        return True
+
     class _TranscriptControl(FormattedTextControl):
         def mouse_handler(self, mouse_event):
-            if mouse_event.event_type == MouseEventType.SCROLL_UP:
-                ui.scroll(-3)
-            elif mouse_event.event_type == MouseEventType.SCROLL_DOWN:
-                ui.scroll(3)
+            t, p = mouse_event.event_type, mouse_event.position
+            if _wheel(mouse_event):
+                pass
+            elif t == MouseEventType.MOUSE_DOWN:
+                ui.sel = [(p.y, p.x), (p.y, p.x)]
+                ui.sel_dragging = False
+                ui.flash = ""
+            elif t == MouseEventType.MOUSE_MOVE and ui.sel is not None and mouse_event.button == MouseButton.LEFT:
+                ui.sel[1] = (p.y, p.x)
+                ui.sel_dragging = ui.sel_dragging or ui.sel[0] != ui.sel[1]
+            elif t == MouseEventType.MOUSE_UP:
+                if ui.sel_dragging:
+                    text = ui.selected_text()
+                    ok = _copy_to_clipboard(text)
+                    ui.flash = f"已复制 {len(text.splitlines())} 行" if ok else "复制失败: 缺 pbcopy/xclip"
+                else:
+                    ui.sel = None
+                    return super().mouse_handler(mouse_event)  # 单击: 展开/折叠
             else:
                 return super().mouse_handler(mouse_event)
 
     transcript = Window(
         _TranscriptControl(ui.fragments, focusable=False),
         wrap_lines=True,
-        right_margins=[ScrollbarMargin()],
     )
 
     def follow_bottom():
@@ -429,6 +553,7 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
     buf = Buffer(multiline=True, history=history, completer=SlashCompleter(agent), complete_while_typing=True)
 
     def submit(text):
+        ui.sel, ui.flash = None, ""
         ui.user(text)
         follow_bottom()
         out = _capture_command(text)
@@ -539,6 +664,10 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
     def _(event):
         event.app.exit()
 
+    @kb.add("s-tab")
+    def _(event):
+        ui.flash = f"已切换: {cycle_mode(agent.policy)}"
+
     @kb.add("pageup")
     def _(event):
         ui.scroll(-10)
@@ -547,7 +676,14 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
     def _(event):
         ui.scroll(10)
 
-    control = BufferControl(
+    # 指针悬在输入框上滚轮也滚会话区 (常见姿势: 鼠标停在底部)
+    class _InputControl(BufferControl):
+        def mouse_handler(self, mouse_event):
+            if _wheel(mouse_event):
+                return None
+            return super().mouse_handler(mouse_event)
+
+    control = _InputControl(
         buffer=buf,
         input_processors=[
             BeforeInput([("class:arrow", "❯ ")]),
@@ -583,7 +719,8 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
         input=input,
         output=output,
     )
-    ui.on_change = lambda: (follow_bottom(), app.invalidate())
+    # 新内容只重绘, 不抢滚动位置 (follow 时自然跟到底部; 用户上滚阅读时流式输出不拽回)
+    ui.on_change = lambda: app.invalidate()
     # 展开/折叠只重绘, 锚点已由 _toggle 定在被点击的块, 不跳底部
     ui.on_redraw = lambda: app.invalidate()
     follow_bottom()

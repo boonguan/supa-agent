@@ -213,14 +213,16 @@ def test_auto_review(tmp):
     assert (Path(tmp) / "d.txt").read_text() == "ok" and not asked
     assert agent.llm.effort == "medium"  # 审核后 effort 恢复原值
 
-    # 模型判 DENY: 升级人工, 人工拒绝 -> 不执行
+    # 模型判 DENY: 不升级人工 (auto 模式不再挨个询问), 原因回传给 agent
     llm2 = FakeLLM([("", [("write_file", {"path": "e.txt", "content": "bad"})]), ("好", None)])
     llm2.chat_response = "DENY\n可疑操作"
     agent2 = Agent(llm2, cwd=tmp, policy=Policy(auto=True))
-    agent2.ui.confirm = lambda *a: "n"
+    asked2 = []
+    agent2.ui.confirm = lambda *a: asked2.append(1) or "n"
     with contextlib.redirect_stdout(io.StringIO()):
         agent2.chat("写文件")
-    assert not (Path(tmp) / "e.txt").exists()
+    assert not (Path(tmp) / "e.txt").exists() and not asked2
+    assert any(m["role"] == "tool" and "可疑操作" in m["content"] for m in agent2.messages)
 
     # 确认时选 auto: 开启自动审核并立即审批当前操作
     llm3 = FakeLLM([("", [("write_file", {"path": "f.txt", "content": "ok"})]), ("好", None)])
@@ -525,14 +527,38 @@ def test_tui():
     mid = "".join(f[1] for f in ui3.fragments())
     assert "line 4000" in mid and "line 7999" not in mid  # 锚定中部: 只见附近
 
-    # 滚动锚点: 向上脱离跟随, 滚回底部恢复跟随
+    # shift+tab 循环权限模式: 确认 -> auto -> yolo -> 确认
+    from harness.tui import cycle_mode
+    p = Policy()
+    assert cycle_mode(p) == "自动审核" and p.auto and not p.yolo
+    assert "yolo" in cycle_mode(p) and p.yolo and not p.auto
+    assert cycle_mode(p) == "手动确认" and not p.auto and not p.yolo
+
+    # 鼠标框选: 高亮 + 抠文本 (视口坐标), 滚动使选择失效
+    ui4 = TranscriptUI()
+    ui4.ansi("abcdef\nghijkl\nmnopqr")
+    ui4.fragments()
+    ui4.sel, ui4.sel_dragging = [(0, 2), (2, 3)], True
+    assert ui4.selected_text() == "cdef\nghijkl\nmnop"
+    ui4.sel = [(2, 3), (0, 2)]  # 反向拖动等价
+    assert ui4.selected_text() == "cdef\nghijkl\nmnop"
+    ui4.sel = [(1, 1), (1, 3)]  # 单行
+    assert ui4.selected_text() == "hij"
+    styled = ui4.fragments()
+    sel_text = "".join(f[1] for f in styled if "class:selected" in f[0])
+    assert sel_text == "hij"
+    ui4.scroll(-1)
+    assert ui4.sel is None  # 滚动清除选择
+
+    # 滚动锚点: 向上脱离跟随 (锚点=视口首行), 剩余不足一屏恢复跟随
+    page = ui3._page_lines()
     ui3.follow = True
     ui3.scroll(-3)
-    assert not ui3.follow and ui3.anchor == ui3.total_lines - 1 - 3
+    assert not ui3.follow and ui3.anchor == ui3.total_lines - page - 3
     ui3.scroll(-3)
-    assert ui3.anchor == ui3.total_lines - 1 - 6
+    assert ui3.anchor == ui3.total_lines - page - 6
     ui3.scroll(10)
-    assert ui3.follow  # 越过底部恢复跟随
+    assert ui3.follow  # 滚回底部恢复跟随
     ui3.scroll(-ui3.total_lines * 2)
     assert ui3.anchor == 0  # 不越界
 
