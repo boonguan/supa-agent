@@ -525,6 +525,17 @@ def test_tui():
     mid = "".join(f[1] for f in ui3.fragments())
     assert "line 4000" in mid and "line 7999" not in mid  # 锚定中部: 只见附近
 
+    # 滚动锚点: 向上脱离跟随, 滚回底部恢复跟随
+    ui3.follow = True
+    ui3.scroll(-3)
+    assert not ui3.follow and ui3.anchor == ui3.total_lines - 1 - 3
+    ui3.scroll(-3)
+    assert ui3.anchor == ui3.total_lines - 1 - 6
+    ui3.scroll(10)
+    assert ui3.follow  # 越过底部恢复跟随
+    ui3.scroll(-ui3.total_lines * 2)
+    assert ui3.anchor == 0  # 不越界
+
     from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
     from prompt_toolkit.data_structures import Point
 

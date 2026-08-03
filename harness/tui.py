@@ -215,6 +215,19 @@ class TranscriptUI:
             self.pending["answer"] = answer
             self._approval_event.set()
 
+    def scroll(self, delta):
+        """移动锚点行 (滚轮/PgUp/PgDn 共用): 向上先脱离跟随, 滚到底自动恢复跟随。"""
+        if delta < 0:
+            if self.follow:
+                self.follow = False
+                self.anchor = max(0, self.total_lines - 1)
+            self.anchor = max(0, self.anchor + delta)
+        else:
+            self.anchor += delta
+            if self.anchor >= self.total_lines - 1:
+                self.follow = True
+        self.on_redraw()
+
     # --- 渲染 ---
 
     def _toggle(self, block):
@@ -367,7 +380,7 @@ def _status_fragments(agent, running):
     elif running[0]:
         hint = "  ·  运行中 (ctrl-c 中断)"
     else:
-        hint = "  ·  点击 ▸ 展开 · PgUp/PgDn 滚动"
+        hint = "  ·  点击 ▸ 展开 · 滚轮/PgUp/PgDn 滚动"
     frags = [
         ("class:status.model", f" {agent.llm.model}"),
         ("class:status", "  ·  "),
@@ -390,9 +403,19 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
     history = InMemoryHistory()
 
     # Window 只渲染可视区 (整屏虚拟渲染在长会话下每帧数秒); 滚动由 fragments 里的
-    # [SetCursorPosition] 锚点驱动: Window 自动滚动保持锚点可见
+    # [SetCursorPosition] 锚点驱动: Window 自动滚动保持锚点可见。
+    # 滚轮不能走 Window 自带滚动 (内容是虚拟视口), 必须改锚点
+    class _TranscriptControl(FormattedTextControl):
+        def mouse_handler(self, mouse_event):
+            if mouse_event.event_type == MouseEventType.SCROLL_UP:
+                ui.scroll(-3)
+            elif mouse_event.event_type == MouseEventType.SCROLL_DOWN:
+                ui.scroll(3)
+            else:
+                return super().mouse_handler(mouse_event)
+
     transcript = Window(
-        FormattedTextControl(ui.fragments, focusable=False),
+        _TranscriptControl(ui.fragments, focusable=False),
         wrap_lines=True,
         right_margins=[ScrollbarMargin()],
     )
@@ -518,16 +541,11 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
 
     @kb.add("pageup")
     def _(event):
-        if ui.follow:
-            ui.follow = False
-            ui.anchor = max(0, ui.total_lines - 1)
-        ui.anchor = max(0, ui.anchor - 10)
+        ui.scroll(-10)
 
     @kb.add("pagedown")
     def _(event):
-        ui.anchor += 10
-        if ui.anchor >= ui.total_lines - 1:
-            ui.follow = True  # 滚回底部后恢复跟随
+        ui.scroll(10)
 
     control = BufferControl(
         buffer=buf,
