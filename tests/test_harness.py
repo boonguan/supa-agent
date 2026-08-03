@@ -256,6 +256,42 @@ def test_env_context(tmp):
     assert "分支 main" in prompt
 
 
+def test_parallel_readonly_tools(tmp):
+    import contextlib
+    import io
+
+    (Path(tmp) / "f1.txt").write_text("alpha", encoding="utf-8")
+    (Path(tmp) / "f2.txt").write_text("beta", encoding="utf-8")
+    llm = FakeLLM([
+        ("", [("read_file", {"path": "f1.txt"}), ("read_file", {"path": "f2.txt"}), ("list_dir", {})]),
+        ("看完了", None),
+    ])
+    agent = Agent(llm, cwd=tmp)
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert agent.chat("看两个文件") == "看完了"
+    tools_msgs = [m for m in agent.messages if m["role"] == "tool"]
+    assert len(tools_msgs) == 3
+    # 结果按原顺序回填, tool_call_id 对应
+    assert "alpha" in tools_msgs[0]["content"] and tools_msgs[0]["tool_call_id"] == "call_0"
+    assert "beta" in tools_msgs[1]["content"] and tools_msgs[1]["tool_call_id"] == "call_1"
+    assert "f1.txt" in tools_msgs[2]["content"]
+
+
+def test_grep_and_read_offset(tmp):
+    from harness.tools import grep, read_file
+
+    agent = Agent(FakeLLM([]), cwd=tmp)
+    (Path(tmp) / "code.py").write_text("aaa\nneedle here\nbbb\n", encoding="utf-8")
+    out = grep(agent, "needle")
+    assert "code.py" in out and "needle here" in out
+    assert grep(agent, "不存在的串") == "(无匹配)"
+
+    (Path(tmp) / "big.txt").write_text("\n".join(f"L{i}" for i in range(1, 101)), encoding="utf-8")
+    out = read_file(agent, "big.txt", offset=50, limit=10)
+    assert out.startswith("50: L50") and "59: L59" in out and "offset=60" in out
+    assert "超出范围" in read_file(agent, "big.txt", offset=999)
+
+
 def test_usage_and_compact(tmp):
     import contextlib
     import io
@@ -417,7 +453,8 @@ def main():
     test_tui()
     for fn in (test_memory_and_skills, test_agent_loop_with_tools, test_edit_file_guards, test_subagent,
                test_reasoning_collapse, test_policy, test_interrupt_cleanup, test_env_context,
-               test_usage_and_compact, test_session_persistence):
+               test_usage_and_compact, test_session_persistence,
+               test_parallel_readonly_tools, test_grep_and_read_offset):
         with tempfile.TemporaryDirectory() as tmp:
             fn(tmp)
     print("所有测试通过")

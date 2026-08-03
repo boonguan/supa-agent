@@ -253,16 +253,26 @@ class Agent:
                 self.messages.append(self._assistant_message(content, reasoning))
                 return content
             self.messages.append(self._assistant_message(content, reasoning, tool_calls))
+            parsed = []
             for call in tool_calls:
-                name = call["function"]["name"]
                 try:
                     args = json.loads(call["function"]["arguments"] or "{}")
                 except json.JSONDecodeError:
                     args = {}
+                name = call["function"]["name"]
+                parsed.append((call, name, _arg_summary(name, args), args))
+
+            def _readonly(name):
+                fn = next((t for t in self.tools if t.name == name), None)
+                return fn is not None and fn.readonly and name != "task"  # task 派子代理, 不并发
+
+            if len(parsed) > 1 and all(_readonly(n) for _, n, _, _ in parsed):
+                self._parallel_round(parsed)
+                continue
+            for call, name, summary, args in parsed:
                 if self.abort:
                     raise KeyboardInterrupt
                 fn = next((t for t in self.tools if t.name == name), None)
-                summary = _arg_summary(name, args)
                 self.ui.tool_call(name, summary, self.depth)
                 if fn is None:
                     result = f"未知工具: {name}"
@@ -298,6 +308,29 @@ class Agent:
                     self.ui.notice(f"压缩失败: {type(e).__name__}: {e}")
         self.ui.notice("已达到最大步数, 任务未完成")
         return ""
+
+    def _parallel_round(self, parsed):
+        """一轮全是只读工具 (task 除外) 时并发执行, 结果按原顺序回填。"""
+        from concurrent.futures import ThreadPoolExecutor
+
+        for _, name, summary, _ in parsed:
+            self.ui.tool_call(name, summary, self.depth)
+
+        def exec_one(item):
+            _, name, _, args = item
+            fn = next(t for t in self.tools if t.name == name)
+            try:
+                return fn(self, **args)
+            except Exception as e:
+                return f"工具出错: {type(e).__name__}: {e}"
+
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            results = list(ex.map(exec_one, parsed))
+        for (call, name, summary, _), result in zip(parsed, results):
+            self.tool_log.append((name, summary, result))
+            del self.tool_log[:-50]
+            self.ui.tool_result(name, result, self.depth)
+            self.messages.append({"role": "tool", "tool_call_id": call["id"], "content": result})
 
     def run(self, task):
         self.reset()

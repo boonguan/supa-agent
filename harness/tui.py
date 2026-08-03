@@ -98,7 +98,8 @@ class TranscriptUI:
         self._text_block = None
         self._md = None
         self._reasoning = None
-        self._last_tool = None
+        self._pending_tools = []  # FIFO: 并行执行时 tool_result 按序回填
+        self._ansi_cache = {}  # id(text_block) -> (len, fragments)
         self.on_change = lambda: None
 
     # --- 写入 ---
@@ -157,7 +158,7 @@ class TranscriptUI:
 
     def tool_call(self, name, summary, depth):
         self._text_block = None
-        self._last_tool = {
+        block = {
             "kind": "tool",
             "name": name,
             "summary": " ".join(summary.split()),
@@ -165,13 +166,13 @@ class TranscriptUI:
             "depth": depth,
             "expanded": self.verbose,
         }
-        self.blocks.append(self._last_tool)
+        self._pending_tools.append(block)
+        self.blocks.append(block)
         self.on_change()
 
     def tool_result(self, name, result, depth):
-        if self._last_tool is not None:
-            self._last_tool["result"] = str(result)
-            self._last_tool = None
+        if self._pending_tools:
+            self._pending_tools.pop(0)["result"] = str(result)
         self.on_change()
 
     def diff(self, old, new):
@@ -216,7 +217,11 @@ class TranscriptUI:
         frags = []
         for b in self.blocks:
             if b["kind"] == "text":
-                frags += to_formatted_text(ANSI(b["ansi"]))
+                cached = self._ansi_cache.get(id(b))
+                if cached is None or cached[0] != len(b["ansi"]):  # ANSI 解析较贵, 按块缓存
+                    cached = (len(b["ansi"]), to_formatted_text(ANSI(b["ansi"])))
+                    self._ansi_cache[id(b)] = cached
+                frags += cached[1]
             elif b["kind"] == "user":
                 for i, line in enumerate(b["text"].splitlines() or [""]):
                     prefix = "❯ " if i == 0 else "  "
@@ -446,6 +451,7 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
         style=STYLE,
         full_screen=True,
         mouse_support=True,
+        min_redraw_interval=0.03,  # 流式 delta 的重绘节流
         input=input,
         output=output,
     )

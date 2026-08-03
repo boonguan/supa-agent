@@ -52,28 +52,32 @@ def run_bash(agent, command):
 
 @tool(
     "read_file",
-    "读取文件内容。",
+    "读取文件内容, 带行号。大文件用 offset 分页读取。",
     {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "文件路径, 相对或绝对"},
+            "offset": {"type": "integer", "description": "从第几行开始读 (1 起), 默认 1"},
             "limit": {"type": "integer", "description": "最多读取的行数, 默认 500"},
         },
         "required": ["path"],
     },
     readonly=True,
 )
-def read_file(agent, path, limit=500):
+def read_file(agent, path, offset=1, limit=500):
     p = _resolve(path, agent.cwd)
     if not p.exists():
         return f"文件不存在: {p}"
     if p.is_dir():
         return f"{p} 是目录, 请用 list_dir"
     lines = p.read_text(errors="replace").splitlines()
-    shown = lines[:limit]
-    result = "\n".join(f"{i + 1}: {line}" for i, line in enumerate(shown))
-    if len(lines) > limit:
-        result += f"\n...(共 {len(lines)} 行, 只显示前 {limit} 行)"
+    start = max(offset - 1, 0)
+    shown = lines[start:start + limit]
+    if not shown:
+        return f"offset 超出范围 (共 {len(lines)} 行)"
+    result = "\n".join(f"{start + i + 1}: {line}" for i, line in enumerate(shown))
+    if start + limit < len(lines):
+        result += f"\n...(共 {len(lines)} 行, 显示 {start + 1}-{start + len(shown)} 行, 继续读用 offset={start + len(shown) + 1})"
     return result
 
 
@@ -162,16 +166,39 @@ def list_dir(agent, path="."):
 )
 def grep(agent, pattern, path=".", include=None):
     import re
+    import shutil
 
     p = _resolve(path, agent.cwd)
     if not p.exists():
         return f"目录不存在: {p}"
+    if shutil.which("rg"):  # ripgrep 快几个数量级, 优先用
+        cmd = ["rg", "-n", "--no-heading", "--max-count", "50", "-e", pattern]
+        if include:
+            cmd += ["-g", include]
+        cmd.append(str(p))
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        except subprocess.TimeoutExpired:
+            return "搜索超时 (30s)"
+        if proc.returncode == 2:
+            return f"rg 出错: {proc.stderr[:300]}"
+        lines = proc.stdout.splitlines()
+        if len(lines) > 200:
+            lines = lines[:200] + ["...(匹配过多, 已截断)"]
+        return "\n".join(line[:400] for line in lines) if lines else "(无匹配)"
+
+    # fallback: 纯 Python, 跳过大目录
+    skip_dirs = {".git", "node_modules", "venv", ".venv", "__pycache__", ".cache", "dist", "build"}
     regex = re.compile(pattern)
     matches = []
-    targets = [p] if p.is_file() else list(p.rglob("*"))
+    if p.is_file():
+        targets = [p]
+    else:
+        targets = (
+            f for f in p.rglob("*")
+            if f.is_file() and not any(part in skip_dirs for part in f.relative_to(p).parts)
+        )
     for f in targets:
-        if not f.is_file():
-            continue
         if include and not f.match(include):
             continue
         try:
