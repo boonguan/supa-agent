@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 
-from . import context, ui
+from . import context
 
 TOOLS = []
 
@@ -118,7 +118,7 @@ def edit_file(agent, path, old, new):
     if count > 1:
         return f"原文出现 {count} 次, 不唯一, 请提供更多上下文"
     p.write_text(text.replace(old, new, 1), encoding="utf-8")
-    ui.print_diff(old, new)
+    agent.ui.diff(old, new)
     return f"已修改 {p}"
 
 
@@ -207,7 +207,7 @@ def grep(agent, pattern, path=".", include=None):
 )
 def todo_write(agent, todos):
     agent.todos = todos
-    ui.print_todos(todos)
+    agent.ui.todos(todos)
     marks = {"pending": "[ ]", "in_progress": "[~]", "completed": "[x]"}
     return "\n".join(f"{marks.get(t['status'], '[ ]')} {t['content']}" for t in todos) or "(清单已清空)"
 
@@ -229,7 +229,7 @@ def task(agent, description, prompt):
         return "子代理不能再派生子代理, 请直接完成"
     from .agent import Agent  # 延迟导入避免循环依赖
 
-    sub = Agent(agent.llm, agent.cwd, depth=agent.depth + 1)
+    sub = Agent(agent.llm, agent.cwd, depth=agent.depth + 1, ui=agent.ui)
     result = sub.chat(prompt)
     return result or "(子代理未返回结果)"
 

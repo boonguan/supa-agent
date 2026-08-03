@@ -11,7 +11,7 @@ from harness.llm import LLM, LLMError, SUPPORTED_MODELS, supported_efforts
 from harness.ui import C, print_todos
 
 try:
-    from harness.tui import create_session, prompt_line
+    from harness.tui import TranscriptUI, run_app
 
     TUI_AVAILABLE = True
 except ImportError:
@@ -91,11 +91,11 @@ def handle_command(agent, line):
         else:
             print("当前没有任务清单")
     elif line == "/reasoning":
-        agent.show_reasoning = not agent.show_reasoning
-        print(f"思维链显示: {'展开' if agent.show_reasoning else '折叠'}")
+        agent.ui.show_reasoning = not agent.ui.show_reasoning
+        print(f"思维链显示: {'展开' if agent.ui.show_reasoning else '折叠'}")
     elif line == "/verbose":
-        agent.verbose = not agent.verbose
-        print(f"工具结果显示: {'多行预览' if agent.verbose else '折叠单行'}")
+        agent.ui.verbose = not agent.ui.verbose
+        print(f"工具结果显示: {'默认展开' if agent.ui.verbose else '默认折叠'}")
     elif line == "/output" or line.startswith("/output "):
         if not agent.tool_log:
             print("还没有工具调用记录")
@@ -124,15 +124,15 @@ def _model_hint(error_text):
 
 def repl(agent):
     effort = agent.llm.effective_effort() or "不支持"
-    print(f"{C.BOLD_CYAN}supa-agent{C.RESET}  ·  {C.GREEN}model: {agent.llm.model}{C.RESET}  ·  {C.YELLOW}effort: {effort}{C.RESET}  ·  {C.CYAN}cwd: {agent.cwd}{C.RESET}")
-    print("输入 / 查看可用命令")
-    session = create_session() if TUI_AVAILABLE else None
+    banner = f"{C.BOLD_CYAN}supa-agent{C.RESET}  ·  {C.GREEN}model: {agent.llm.model}{C.RESET}  ·  {C.YELLOW}effort: {effort}{C.RESET}  ·  {C.CYAN}cwd: {agent.cwd}{C.RESET}\n{C.DIM}输入 / 查看可用命令{C.RESET}"
+    if TUI_AVAILABLE:
+        agent.ui = TranscriptUI()
+        run_app(agent, handle_command, banner=banner)
+        return
+    print(banner)
     while True:
         try:
-            if TUI_AVAILABLE:
-                line = prompt_line(session, agent).strip()
-            else:
-                line = input(f"{agent.cwd} > ").strip()
+            line = input(f"{agent.cwd} > ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nbye")
             break

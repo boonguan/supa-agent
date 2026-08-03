@@ -2,7 +2,7 @@ import json
 
 from .context import build_system_prompt
 from .tools import TOOLS
-from .ui import C, MdStream, result_collapsed, result_preview, tool_line
+from .ui import ConsoleUI
 
 
 class _ToolAccumulator:
@@ -63,15 +63,15 @@ def _arg_summary(name, args):
 
 
 class Agent:
-    def __init__(self, llm, cwd, max_steps=30, depth=0):
+    def __init__(self, llm, cwd, max_steps=30, depth=0, ui=None):
         self.llm = llm
         self.cwd = cwd
         self.max_steps = max_steps
         self.depth = depth
+        self.ui = ui or ConsoleUI()
         self.todos = []
-        self.show_reasoning = False  # 思维链默认折叠, /reasoning 切换
-        self.verbose = False  # 工具结果默认折叠单行, /verbose 切换预览
         self.tool_log = []  # (name, summary, result), /output 回看
+        self.abort = False  # TUI ctrl-c 置位, 流式循环检测后中断
         self.messages = [{"role": "system", "content": build_system_prompt(llm.model, cwd)}]
 
     def set_model(self, name):
@@ -107,21 +107,19 @@ class Agent:
             for t in self.tools
         ]
 
-    def _end_reasoning(self, reasoning, usage=None):
-        if self.show_reasoning:
-            print()
-            return
-        # 收起进度行: usage 里有真实 reasoning_tokens 就用, 没有 (正文已开始/端点不支持) 用估算
+    @staticmethod
+    def _reason_label(reasoning, usage):
+        # usage 里有真实 reasoning_tokens 就用, 没有 (正文已开始/端点不支持) 用估算
         tokens = (usage or {}).get("completion_tokens_details", {}).get("reasoning_tokens")
-        label = f"{tokens} tokens" if tokens else f"~{_est_tokens(''.join(reasoning))} tokens"
-        print(f"\r{C.DIM}✱ 已思考 ({label}){' ' * 12}{C.RESET}")
+        return f"{tokens} tokens" if tokens else f"~{_est_tokens(''.join(reasoning))} tokens"
 
     def _stream(self):
         content, reasoning = [], []
         usage = None
         accumulator = _ToolAccumulator()
-        md = MdStream() if self.depth == 0 else None  # 正文按行渲染 markdown; 子代理不刷屏
         for chunk in self.llm.chat_stream(self.messages, tools=self.schemas):
+            if self.abort:
+                raise KeyboardInterrupt
             if chunk.get("usage"):
                 usage = chunk["usage"]
             choices = chunk.get("choices") or []
@@ -130,22 +128,16 @@ class Agent:
             delta = choices[0].get("delta", {})
             if delta.get("reasoning_content"):
                 reasoning.append(delta["reasoning_content"])
-                if md:
-                    if self.show_reasoning:
-                        print(f"{C.DIM}{delta['reasoning_content']}{C.RESET}", end="", flush=True)
-                    else:
-                        print(f"\r{C.DIM}✱ 思考中… ~{_est_tokens(''.join(reasoning))} tokens{C.RESET}", end="", flush=True)
+                self.ui.on_reasoning(delta["reasoning_content"], _est_tokens("".join(reasoning)), self.depth)
             if delta.get("content"):
-                if md and reasoning and not content:
-                    self._end_reasoning(reasoning)
+                if reasoning and not content:
+                    self.ui.end_reasoning(self._reason_label(reasoning, None), "".join(reasoning), self.depth)
                 content.append(delta["content"])
-                if md:
-                    md.feed(delta["content"])
+                self.ui.on_content(delta["content"], self.depth)
             accumulator.add(delta)
-        if md:
-            if reasoning and not content:
-                self._end_reasoning(reasoning, usage)
-            md.close()
+        if reasoning and not content:
+            self.ui.end_reasoning(self._reason_label(reasoning, usage), "".join(reasoning), self.depth)
+        self.ui.end_content(self.depth)
         return "".join(content), "".join(reasoning), accumulator.to_calls()
 
     def _assistant_message(self, content, reasoning, tool_calls=None):
@@ -158,6 +150,7 @@ class Agent:
         return msg
 
     def chat(self, task):
+        self.abort = False
         self.messages.append({"role": "user", "content": task})
         for _ in range(self.max_steps):
             content, reasoning, tool_calls = self._stream()
@@ -171,9 +164,11 @@ class Agent:
                     args = json.loads(call["function"]["arguments"] or "{}")
                 except json.JSONDecodeError:
                     args = {}
+                if self.abort:
+                    raise KeyboardInterrupt
                 fn = next((t for t in self.tools if t.name == name), None)
                 summary = _arg_summary(name, args)
-                tool_line(name, summary, depth=self.depth)
+                self.ui.tool_call(name, summary, self.depth)
                 if fn is None:
                     result = f"未知工具: {name}"
                 else:
@@ -183,15 +178,11 @@ class Agent:
                         result = f"工具出错: {type(e).__name__}: {e}"
                 self.tool_log.append((name, summary, result))
                 del self.tool_log[:-50]
-                if name not in ("todo_write", "edit_file"):  # 这两个工具自带渲染
-                    if self.verbose:
-                        result_preview(result, depth=self.depth)
-                    else:
-                        result_collapsed(result, depth=self.depth)
+                self.ui.tool_result(name, result, self.depth)
                 self.messages.append(
                     {"role": "tool", "tool_call_id": call["id"], "content": result}
                 )
-        print(f"{C.DIM}已达到最大步数, 任务未完成{C.RESET}")
+        self.ui.notice("已达到最大步数, 任务未完成")
         return ""
 
     def run(self, task):

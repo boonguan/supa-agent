@@ -20,6 +20,9 @@ class FakeLLM:
         self.rounds = list(rounds)
         self.last_tools = None
 
+    def effective_effort(self):
+        return self.effort
+
     def chat_stream(self, messages, tools=None):
         self.last_tools = tools
         content, tool_calls = self.rounds.pop(0)
@@ -142,7 +145,7 @@ def test_reasoning_collapse(tmp):
 
     llm2 = FakeLLM([("你好", None)])
     agent2 = Agent(llm2, cwd=tmp)
-    agent2.show_reasoning = True
+    agent2.ui.show_reasoning = True
     buf2 = io.StringIO()
     with contextlib.redirect_stdout(buf2):
         agent2.chat("hi")
@@ -181,27 +184,40 @@ def test_tui():
         from prompt_toolkit.input import create_pipe_input
         from prompt_toolkit.output import DummyOutput
 
-        from harness.tui import create_session, prompt_line
+        from harness.tui import TranscriptUI, run_app
     except ImportError:
         return  # 无 prompt_toolkit 时跳过
 
-    class FakeAgent:
-        cwd = "/tmp"
+    # TranscriptUI: 块结构与点击展开
+    ui = TranscriptUI()
+    ui.on_content("## 标题\n正文 **加粗**\n", 0)
+    ui.end_content(0)
+    ui.tool_call("bash", "git log", 0)
+    ui.tool_result("bash", "line1\nline2\nline3", 0)
+    ui.on_reasoning("想", 1, 0)
+    ui.end_reasoning("7 tokens", "想", 0)
+    kinds = [b["kind"] for b in ui.blocks]
+    assert kinds == ["text", "tool", "reasoning"]
+    text = "".join(f[1] for f in ui.fragments())
+    assert "标题" in text and "##" not in text  # markdown 已渲染
+    assert "+2 行" in text and "line2" not in text  # 工具块默认折叠
+    tool_block = ui.blocks[1]
+    tool_block["expanded"] = True  # 模拟点击展开
+    text = "".join(f[1] for f in ui.fragments())
+    assert "line2" in text and "line3" in text
+    assert "已思考 (7 tokens)" in text
 
-        class llm:
-            model = "deepseek-v4-flash"
-            effort = "medium"
+    # 全屏 app: 发 /exit 能干净退出
+    import tempfile
 
-            @staticmethod
-            def effective_effort():
-                return "medium"
+    with tempfile.TemporaryDirectory() as tmp:
+        import main as main_mod
 
-    with create_pipe_input() as pipe:
-        session = create_session(input=pipe, output=DummyOutput())
-        pipe.send_text("hello\n")
-        assert prompt_line(session, FakeAgent()) == "hello"
-        pipe.send_text("a\x1b\rb\n")  # Alt+Enter 换行, Enter 发送
-        assert prompt_line(session, FakeAgent()) == "a\nb"
+        agent = Agent(FakeLLM([]), cwd=tmp, ui=TranscriptUI())
+        with create_pipe_input() as pipe:
+            pipe.send_text("/help\n/exit\n")
+            run_app(agent, main_mod.handle_command, banner="hi", input=pipe, output=DummyOutput())
+        assert any(b["kind"] == "user" and b["text"] == "/help" for b in agent.ui.blocks)
 
 
 def main():

@@ -95,9 +95,11 @@ def _plain(s):
 
 
 class MdStream:
-    """按行流式把 Markdown 渲染成 ANSI: 标题/加粗/行内代码/代码块/列表/表格对齐。"""
+    """按行流式把 Markdown 渲染成 ANSI: 标题/加粗/行内代码/代码块/列表/表格对齐。
+    printer 每次收到一行渲染好的 ANSI 文本 (不含换行)。"""
 
-    def __init__(self):
+    def __init__(self, printer=print):
+        self._p = printer
         self.buf = ""
         self.table = []
         self.in_code = False
@@ -121,7 +123,7 @@ class MdStream:
             self.in_code = not self.in_code
             return
         if self.in_code:
-            print(f"  {C.CYAN}{line}{C.RESET}")
+            self._p(f"  {C.CYAN}{line}{C.RESET}")
             return
         if stripped.startswith("|") and stripped.endswith("|") and len(stripped) > 1:
             self.table.append(stripped)
@@ -129,19 +131,19 @@ class MdStream:
         self._flush_table()
         m = re.match(r"^(#{1,6})\s+(.*)", stripped)
         if m:
-            print(f"{C.BOLD_CYAN}{m.group(2)}{C.RESET}")
+            self._p(f"{C.BOLD_CYAN}{m.group(2)}{C.RESET}")
             return
         if re.match(r"^[-*_]{3,}$", stripped):
-            print(f"{C.DIM}{'─' * 40}{C.RESET}")
+            self._p(f"{C.DIM}{'─' * 40}{C.RESET}")
             return
         m = re.match(r"^(\s*)[-*]\s+(.*)", line)
         if m:
-            print(f"{m.group(1)}• {_inline(m.group(2))}")
+            self._p(f"{m.group(1)}• {_inline(m.group(2))}")
             return
         if stripped.startswith("> "):
-            print(f"{C.DIM}│ {_inline(stripped[2:])}{C.RESET}")
+            self._p(f"{C.DIM}│ {_inline(stripped[2:])}{C.RESET}")
             return
-        print(_inline(line))
+        self._p(_inline(line))
 
     def _flush_table(self):
         rows = [
@@ -160,12 +162,70 @@ class MdStream:
                 for i in range(ncols)
             ]
             body = f" {C.DIM}│{C.RESET} ".join(cells)
-            print(f"{C.BOLD if n == 0 else ''}{body}{C.RESET}")
+            self._p(f"{C.BOLD if n == 0 else ''}{body}{C.RESET}")
             if n == 0:
-                print(f"{C.DIM}{'─' * min(sum(widths) + 3 * (ncols - 1), 100)}{C.RESET}")
+                self._p(f"{C.DIM}{'─' * min(sum(widths) + 3 * (ncols - 1), 100)}{C.RESET}")
 
 
 def render_markdown(text):
     md = MdStream()
     md.feed(text)
     md.close()
+
+
+class ConsoleUI:
+    """默认 UI: 直接 print 到终端 (一次性模式 / 无 prompt_toolkit 降级 / 测试)。
+    Agent 通过这组回调输出; TUI 模式换成 TranscriptUI (harness/tui.py)。"""
+
+    def __init__(self):
+        self.verbose = False  # 工具结果: 折叠单行 / 多行预览
+        self.show_reasoning = False  # 思维链: 折叠进度行 / 原文
+        self._md = None
+
+    def on_reasoning(self, delta, est_tokens, depth):
+        if depth:
+            return
+        if self.show_reasoning:
+            print(f"{C.DIM}{delta}{C.RESET}", end="", flush=True)
+        else:
+            print(f"\r{C.DIM}✱ 思考中… ~{est_tokens} tokens{C.RESET}", end="", flush=True)
+
+    def end_reasoning(self, label, text, depth):
+        if depth:
+            return
+        if self.show_reasoning:
+            print()
+        else:
+            print(f"\r{C.DIM}✱ 已思考 ({label}){' ' * 12}{C.RESET}")
+
+    def on_content(self, delta, depth):
+        if depth:
+            return
+        if self._md is None:
+            self._md = MdStream()
+        self._md.feed(delta)
+
+    def end_content(self, depth):
+        if self._md is not None:
+            self._md.close()
+            self._md = None
+
+    def tool_call(self, name, summary, depth):
+        tool_line(name, summary, depth)
+
+    def tool_result(self, name, result, depth):
+        if name in ("todo_write", "edit_file"):  # 自带渲染 (todos/diff)
+            return
+        if self.verbose:
+            result_preview(result, depth=depth)
+        else:
+            result_collapsed(result, depth=depth)
+
+    def diff(self, old, new):
+        print_diff(old, new)
+
+    def todos(self, todos):
+        print_todos(todos)
+
+    def notice(self, text):
+        print(f"{C.DIM}{text}{C.RESET}")

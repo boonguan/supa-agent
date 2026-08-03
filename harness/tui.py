@@ -1,19 +1,26 @@
+import contextlib
+import io
+import threading
+
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.filters import Condition
+from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, Window
+from prompt_toolkit.layout import Float, FloatContainer, HSplit, Layout, ScrollablePane, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.layout.processors import AfterInput, BeforeInput, ConditionalProcessor
+from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.styles import Style
 from prompt_toolkit.widgets import Frame
 from prompt_toolkit.widgets import base as _widgets_base
 
-from .llm import SUPPORTED_MODELS, supported_efforts
+from .llm import LLMError, SUPPORTED_MODELS, supported_efforts
+from .ui import C, _truncate_width, print_diff, print_todos
 
 # Frame 默认直角边框, 改成 opencode 的圆角
 _widgets_base.Border.TOP_LEFT = "╭"
@@ -36,6 +43,10 @@ STYLE = Style.from_dict(
         "status.model": "#34d399",
         "status.effort": "#fbbf24",
         "status.cwd": "#93c5fd",
+        "tool.bullet": "#34d399",
+        "tool.name": "bold",
+        "dim": "#6b7280",
+        "user": "bold #34d399",
     }
 )
 
@@ -64,38 +75,220 @@ class SlashCompleter(Completer):
                     yield Completion(cmd, start_position=-len(text))
 
 
-class Session:
-    """跨轮共享历史与 (测试用) 输入输出。"""
-
-    def __init__(self, input=None, output=None):
-        self.history = InMemoryHistory()
-        self.input = input
-        self.output = output
+def _capture(fn, *args):
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        fn(*args)
+    return buf.getvalue().rstrip("\n")
 
 
-def create_session(input=None, output=None):
-    return Session(input=input, output=output)
+class TranscriptUI:
+    """结构化会话区: 工具/思考块可点击展开折叠 (CC 风格)。实现 ConsoleUI 同款回调接口。"""
+
+    def __init__(self):
+        self.verbose = False  # 新工具块默认展开与否
+        self.show_reasoning = False  # 新思考块默认展开与否
+        self.blocks = []
+        self._text_block = None
+        self._md = None
+        self._reasoning = None
+        self._last_tool = None
+        self.on_change = lambda: None
+
+    # --- 写入 ---
+
+    def _text(self, line):
+        if self._text_block is None:
+            self._text_block = {"kind": "text", "ansi": ""}
+            self.blocks.append(self._text_block)
+        self._text_block["ansi"] += line + "\n"
+        self.on_change()
+
+    def ansi(self, text):
+        """整段 ANSI 文本 (命令输出等), 独立成块"""
+        self._text_block = None
+        if text:
+            self._text(text)
+        self._text_block = None
+
+    def user(self, text):
+        self._text_block = None
+        self.blocks.append({"kind": "user", "text": text})
+        self._text_block = None
+        self.on_change()
+
+    def on_reasoning(self, delta, est_tokens, depth):
+        if depth:
+            return
+        if self._reasoning is None:
+            self._reasoning = {"kind": "reasoning", "text": "", "label": "", "expanded": self.show_reasoning, "done": False}
+            self.blocks.append(self._reasoning)
+        self._reasoning["text"] += delta
+        self._reasoning["label"] = f"✱ 思考中… ~{est_tokens} tokens"
+        self.on_change()
+
+    def end_reasoning(self, label, text, depth):
+        if depth or self._reasoning is None:
+            return
+        self._reasoning.update(label=f"✱ 已思考 ({label})", text=text, done=True)
+        self._reasoning = None
+        self.on_change()
+
+    def on_content(self, delta, depth):
+        if depth:
+            return
+        if self._md is None:
+            from .ui import MdStream
+
+            self._md = MdStream(printer=self._text)
+        self._md.feed(delta)
+
+    def end_content(self, depth):
+        if self._md is not None:
+            self._md.close()
+            self._md = None
+        self._text_block = None
+
+    def tool_call(self, name, summary, depth):
+        self._text_block = None
+        self._last_tool = {
+            "kind": "tool",
+            "name": name,
+            "summary": " ".join(summary.split()),
+            "result": "",
+            "depth": depth,
+            "expanded": self.verbose,
+        }
+        self.blocks.append(self._last_tool)
+        self.on_change()
+
+    def tool_result(self, name, result, depth):
+        if self._last_tool is not None:
+            self._last_tool["result"] = str(result)
+            self._last_tool = None
+        self.on_change()
+
+    def diff(self, old, new):
+        self.ansi(_capture(print_diff, old, new))
+
+    def todos(self, todos):
+        self.ansi(_capture(print_todos, todos))
+
+    def notice(self, text):
+        self.ansi(f"{C.DIM}{text}{C.RESET}")
+
+    # --- 渲染 ---
+
+    def _toggle(self, block):
+        def handler(mouse_event):
+            if mouse_event.event_type == MouseEventType.MOUSE_UP:
+                block["expanded"] = not block["expanded"]
+                self.on_change()
+            else:
+                return NotImplemented
+
+        return handler
+
+    def fragments(self):
+        frags = []
+        for b in self.blocks:
+            if b["kind"] == "text":
+                frags += to_formatted_text(ANSI(b["ansi"]))
+            elif b["kind"] == "user":
+                frags += [("class:user", "❯ "), ("", b["text"] + "\n")]
+            elif b["kind"] == "reasoning":
+                h = self._toggle(b)
+                arrow = "▾" if b["expanded"] else "▸"
+                frags.append(("class:dim", f"{arrow} {b['label']}\n", h))
+                if b["expanded"]:
+                    for line in b["text"].splitlines():
+                        frags.append(("class:dim", f"  {line}\n"))
+            elif b["kind"] == "tool":
+                h = self._toggle(b)
+                indent = "  " * b["depth"]
+                arrow = "▾" if b["expanded"] else "▸"
+                frags += [
+                    ("class:dim", f"{indent}{arrow} ", h),
+                    ("class:tool.bullet", "● ", h),
+                    ("class:tool.name", b["name"] + " ", h),
+                    ("class:dim", _truncate_width(b["summary"], 120) + "\n", h),
+                ]
+                lines = b["result"].splitlines() or [""]
+                if b["expanded"]:
+                    for line in lines:
+                        frags.append(("class:dim", f"{indent}    │ {line}\n"))
+                else:
+                    more = f" +{len(lines) - 1} 行" if len(lines) > 1 else ""
+                    frags.append(("class:dim", f"{indent}    └ {_truncate_width(lines[0], 100)}{more}\n", h))
+        return frags
 
 
-def _status_fragments(agent):
+def _status_fragments(agent, running):
     effort = agent.llm.effective_effort()
-    frags = [
+    return [
         ("class:status.model", f" {agent.llm.model}"),
         ("class:status", "  ·  "),
         ("class:status.effort", f"effort: {effort or '不支持'}"),
         ("class:status", "  ·  "),
         ("class:status.cwd", agent.cwd),
+        ("class:status", "  ·  运行中 (ctrl-c 中断)" if running[0] else "  ·  点击 ▸ 展开 · PgUp/PgDn 滚动"),
     ]
-    return frags
 
 
-def prompt_line(session, agent):
-    buf = Buffer(
-        multiline=True,
-        history=session.history,
-        completer=SlashCompleter(agent),
-        complete_while_typing=True,
-    )
+def run_app(agent, handle_command, banner="", input=None, output=None):
+    """全屏 TUI 主循环: 上方可点击会话区, 下方输入框。agent.ui 必须是 TranscriptUI。"""
+    ui = agent.ui
+    running = [False]
+    history = InMemoryHistory()
+
+    transcript = Window(FormattedTextControl(ui.fragments, focusable=False), wrap_lines=True)
+    pane = ScrollablePane(transcript, show_scrollbar=True)
+
+    def follow_bottom():
+        pane.vertical_scroll = 10 ** 8  # 渲染时被钳到底部
+
+    if banner:
+        ui.ansi(banner)
+
+    buf = Buffer(multiline=True, history=history, completer=SlashCompleter(agent), complete_while_typing=True)
+
+    def submit(text):
+        ui.user(text)
+        follow_bottom()
+        out = _capture_command(text)
+        if out is False:
+            app.exit()
+            return
+        if out is not None:  # 命令已处理
+            return
+        running[0] = True
+
+        def work():
+            try:
+                agent.chat(text)
+            except LLMError as e:
+                ui.notice(f"错误: {e}")
+            except KeyboardInterrupt:
+                ui.notice("(已中断)")
+            except Exception as e:  # 后台线程兜底, 避免静默挂掉
+                ui.notice(f"内部错误: {type(e).__name__}: {e}")
+            finally:
+                running[0] = False
+                follow_bottom()
+                app.invalidate()
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _capture_command(text):
+        """斜杠命令: 捕获其 print 输出进会话区。返回 None 表示不是命令。"""
+        buf_out = io.StringIO()
+        with contextlib.redirect_stdout(buf_out):
+            handled = handle_command(agent, text)
+        if handled is None:
+            return None
+        if buf_out.getvalue().strip():
+            ui.ansi(buf_out.getvalue().rstrip("\n"))
+        return handled
 
     kb = KeyBindings()
 
@@ -105,8 +298,15 @@ def prompt_line(session, agent):
         if state and state.current_completion:
             buf.apply_completion(state.current_completion)
             return
+        text = buf.text.strip()
+        if not text:
+            return
+        if running[0]:
+            ui.notice("任务运行中, 等它结束或 ctrl-c 中断")
+            return
         buf.append_to_history()
-        event.app.exit(result=buf.text)
+        buf.reset()
+        submit(text)
 
     @kb.add("escape", "enter")
     def _(event):
@@ -114,11 +314,22 @@ def prompt_line(session, agent):
 
     @kb.add("c-c")
     def _(event):
-        event.app.exit(exception=KeyboardInterrupt())
+        if running[0]:
+            agent.abort = True
+        else:
+            event.app.exit()
 
     @kb.add("c-d", filter=Condition(lambda: not buf.text))
     def _(event):
-        event.app.exit(exception=EOFError())
+        event.app.exit()
+
+    @kb.add("pageup")
+    def _(event):
+        pane.vertical_scroll = max(0, pane.vertical_scroll - 10)
+
+    @kb.add("pagedown")
+    def _(event):
+        pane.vertical_scroll += 10
 
     control = BufferControl(
         buffer=buf,
@@ -130,17 +341,13 @@ def prompt_line(session, agent):
             ),
         ],
     )
-    # 补全菜单展开时撑高输入区, 给浮层留位置
-    input_window = Window(
-        control,
-        wrap_lines=True,
-        height=lambda: Dimension(min=8) if buf.complete_state else None,
-    )
+    input_window = Window(control, wrap_lines=True, height=lambda: Dimension(min=6) if buf.complete_state else Dimension(min=1, max=8))
     root = FloatContainer(
         HSplit(
             [
+                pane,
                 Frame(input_window),
-                Window(FormattedTextControl(lambda: _status_fragments(agent)), height=1),
+                Window(FormattedTextControl(lambda: _status_fragments(agent, running)), height=1),
             ]
         ),
         floats=[Float(xcursor=True, ycursor=True, content=CompletionsMenu(max_height=8, scroll_offset=1))],
@@ -149,7 +356,11 @@ def prompt_line(session, agent):
         layout=Layout(root, focused_element=input_window),
         key_bindings=kb,
         style=STYLE,
-        input=session.input,
-        output=session.output,
+        full_screen=True,
+        mouse_support=True,
+        input=input,
+        output=output,
     )
-    return app.run()
+    ui.on_change = lambda: (follow_bottom(), app.invalidate())
+    follow_bottom()
+    app.run()
