@@ -46,7 +46,8 @@ STYLE = Style.from_dict(
         "tool.bullet": "#34d399",
         "tool.name": "bold",
         "dim": "#6b7280",
-        "user": "bold #34d399",
+        "user": "bg:#374151 bold #34d399",
+        "user.text": "bg:#374151 #e5e7eb",
     }
 )
 
@@ -195,7 +196,9 @@ class TranscriptUI:
             if b["kind"] == "text":
                 frags += to_formatted_text(ANSI(b["ansi"]))
             elif b["kind"] == "user":
-                frags += [("class:user", "❯ "), ("", b["text"] + "\n")]
+                for i, line in enumerate(b["text"].splitlines() or [""]):
+                    prefix = "❯ " if i == 0 else "  "
+                    frags += [("class:user", prefix), ("class:user.text", f" {line} "), ("", "\n")]
             elif b["kind"] == "reasoning":
                 h = self._toggle(b)
                 arrow = "▾" if b["expanded"] else "▸"
@@ -364,7 +367,12 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
             ),
         ],
     )
-    input_window = Window(control, wrap_lines=True, height=lambda: Dimension(min=6) if buf.complete_state else Dimension(min=1, max=8))
+    # 默认一行, 跟随内容行数扩展 (最多 8 行); 补全菜单浮层朝上开, 不用预留高度
+    input_window = Window(
+        control,
+        wrap_lines=True,
+        height=lambda: Dimension.exact(min(max(buf.document.line_count, 1), 8)),
+    )
     root = FloatContainer(
         HSplit(
             [
