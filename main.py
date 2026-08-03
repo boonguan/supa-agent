@@ -33,6 +33,7 @@ HELP = """命令:
   /reasoning        展开/折叠思维链显示 (默认折叠为进度行)
   /verbose          切换工具结果显示: 折叠单行 (默认) / 多行预览
   /output [n]       查看倒数第 n 条工具调用的完整输出 (默认最近一条)
+  /auto             开关自动审核 (修改类操作由模型审批, 拒绝时升级人工确认)
   /jobs             查看后台任务 (bash background=true)
   /cost             查看本会话 token 用量
   /compact          手动压缩对话历史 (上下文超 70% 会自动压缩)
@@ -99,6 +100,9 @@ def handle_command(agent, line):
             print_todos(agent.todos)
         else:
             print("当前没有任务清单")
+    elif line == "/auto":
+        agent.policy.auto = not agent.policy.auto
+        print(f"自动审核: {'开启 (修改类操作由模型审批, 拒绝时升级人工)' if agent.policy.auto else '关闭 (回到人工确认)'}")
     elif line == "/jobs":
         if not agent.jobs:
             print("没有后台任务 (bash 加 background=true 启动)")
@@ -235,7 +239,8 @@ def main():
         print("需要设置环境变量 LLM_API_KEY, 可选 LLM_BASE_URL / LLM_MODEL, 详见 README", file=sys.stderr)
         sys.exit(1)
 
-    policy = Policy(yolo=args.yolo or cfg.get("yolo", False), extra_prefixes=cfg.get("bash_allow", ()))
+    policy = Policy(yolo=args.yolo or cfg.get("yolo", False), extra_prefixes=cfg.get("bash_allow", ()),
+                    auto=cfg.get("auto", False))
     agent = Agent(llm, cwd=cwd, policy=policy)
     if args.resume:
         sessions = list_sessions()

@@ -280,11 +280,7 @@ class Agent:
                 else:
                     allowed = True
                     if self.policy.check(name, args, getattr(fn, "readonly", False)) == "ask":
-                        answer = self.ui.confirm(name, summary, self.depth)
-                        if answer == "a":
-                            self.policy.remember(name, args)
-                        elif answer != "y":
-                            allowed = False
+                        allowed = self._resolve_permission(name, args, summary)
                     if not allowed:
                         result = "用户拒绝执行该操作, 请改用其他方式或询问用户"
                     else:
@@ -309,6 +305,55 @@ class Agent:
                     self.ui.notice(f"压缩失败: {type(e).__name__}: {e}")
         self.ui.notice("已达到最大步数, 任务未完成")
         return ""
+
+    AUTO_REVIEW_PROMPT = """你是 coding agent 的操作安全审核员。agent 想执行以下操作, 判断是否安全:
+
+工作目录: {cwd}
+操作: {name}
+参数: {args}
+
+常规开发操作 (读写项目内文件、安装常见依赖、跑测试构建、git add/commit) 回答 ALLOW。
+危险操作 (大范围删除、rm -rf 系统路径、git push --force、发布/部署、外发敏感数据、改系统配置、下载执行可疑脚本) 回答 DENY。
+第一行只写 ALLOW 或 DENY, 第二行用一句话说明原因。"""
+
+    def _auto_review(self, name, args):
+        """让模型审批一次操作。返回 (是否允许, 原因)。审核失败按拒绝处理。"""
+        old_effort = self.llm.effort
+        self.llm.effort = "none"  # 审批不需要思考, 求快
+        try:
+            resp = self.llm.chat([{
+                "role": "user",
+                "content": self.AUTO_REVIEW_PROMPT.format(
+                    cwd=self.cwd, name=name, args=json.dumps(args, ensure_ascii=False)[:1000]),
+            }])
+            text = (resp["choices"][0]["message"]["content"] or "").strip()
+        except Exception as e:
+            return False, f"审核请求失败: {type(e).__name__}"
+        finally:
+            self.llm.effort = old_effort
+        lines = text.splitlines() or [""]
+        ok = lines[0].strip().upper().startswith("ALLOW")
+        reason = (lines[1] if len(lines) > 1 else lines[0]).strip()[:120]
+        return ok, reason
+
+    def _resolve_permission(self, name, args, summary):
+        """决定一次 ask 级操作是否放行: 自动审核 (开启时) -> 人工确认。"""
+        if self.policy.auto:
+            ok, reason = self._auto_review(name, args)
+            self.ui.notice(f"🛡 自动审核{'通过' if ok else '拒绝'}: {reason}")
+            if ok:
+                return True
+            # 模型拒绝 -> 升级人工确认
+        answer = self.ui.confirm(name, summary, self.depth)
+        if answer == "auto":
+            self.policy.auto = True
+            ok, reason = self._auto_review(name, args)
+            self.ui.notice(f"🛡 自动审核已开启, 本次{'通过' if ok else '拒绝'}: {reason}")
+            return ok
+        if answer == "a":
+            self.policy.remember(name, args)
+            return True
+        return answer == "y"
 
     def _parallel_round(self, parsed):
         """一轮全是只读工具 (task 除外) 时并发执行, 结果按原顺序回填。"""

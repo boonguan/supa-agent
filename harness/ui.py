@@ -231,9 +231,11 @@ class ConsoleUI:
         print(f"{C.DIM}{text}{C.RESET}")
 
     def confirm(self, name, summary, depth):
-        """询问是否允许执行修改类操作。返回 y / n / a (always)。"""
-        print(f"{C.YELLOW}⚠ 允许执行 {name}: {summary[:120]} ?  [y=允许 n=拒绝 a=本会话总是允许]{C.RESET}")
+        """询问是否允许执行修改类操作。返回 y / a / auto / n。"""
+        print(f"{C.YELLOW}⚠ {name}  {summary[:120]}{C.RESET}")
+        print(f"{C.YELLOW}  1. 允许  2. 允许且不再询问  3. 开启自动审核  4. 拒绝{C.RESET}")
+        mapping = {"1": "y", "y": "y", "2": "a", "a": "a", "3": "auto", "auto": "auto", "4": "n", "n": "n"}
         try:
-            return (input("> ").strip().lower() or "n")[0]
+            return mapping.get(input("> ").strip().lower(), "n")
         except (EOFError, KeyboardInterrupt):
             return "n"

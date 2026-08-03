@@ -32,8 +32,10 @@ class FakeLLM:
     def context_window(self):
         return 128_000
 
-    def chat(self, messages, tools=None):  # compact 用的非流式接口
-        return {"choices": [{"message": {"content": "摘要: 用户在改文件, 已改 a.txt"}}]}
+    chat_response = "摘要: 用户在改文件, 已改 a.txt"  # compact / 自动审核共用, 测试可改
+
+    def chat(self, messages, tools=None):
+        return {"choices": [{"message": {"content": self.chat_response}}]}
 
     def chat_stream(self, messages, tools=None):
         self.last_tools = tools
@@ -194,6 +196,41 @@ def test_policy(tmp):
         agent.chat("改文件")
     assert target.read_text() == "orig"  # 未被执行
     assert any(m["role"] == "tool" and "拒绝" in m["content"] for m in agent.messages)
+
+
+def test_auto_review(tmp):
+    import contextlib
+    import io
+
+    # 模型判 ALLOW: 不询问直接执行
+    llm = FakeLLM([("", [("write_file", {"path": "d.txt", "content": "ok"})]), ("完成", None)])
+    llm.chat_response = "ALLOW\n常规项目内写文件"
+    agent = Agent(llm, cwd=tmp, policy=Policy(auto=True))
+    asked = []
+    agent.ui.confirm = lambda *a: asked.append(1) or "n"
+    with contextlib.redirect_stdout(io.StringIO()):
+        agent.chat("写文件")
+    assert (Path(tmp) / "d.txt").read_text() == "ok" and not asked
+    assert agent.llm.effort == "medium"  # 审核后 effort 恢复原值
+
+    # 模型判 DENY: 升级人工, 人工拒绝 -> 不执行
+    llm2 = FakeLLM([("", [("write_file", {"path": "e.txt", "content": "bad"})]), ("好", None)])
+    llm2.chat_response = "DENY\n可疑操作"
+    agent2 = Agent(llm2, cwd=tmp, policy=Policy(auto=True))
+    agent2.ui.confirm = lambda *a: "n"
+    with contextlib.redirect_stdout(io.StringIO()):
+        agent2.chat("写文件")
+    assert not (Path(tmp) / "e.txt").exists()
+
+    # 确认时选 auto: 开启自动审核并立即审批当前操作
+    llm3 = FakeLLM([("", [("write_file", {"path": "f.txt", "content": "ok"})]), ("好", None)])
+    llm3.chat_response = "ALLOW\n安全"
+    agent3 = Agent(llm3, cwd=tmp)
+    agent3.ui.confirm = lambda *a: "auto"
+    with contextlib.redirect_stdout(io.StringIO()):
+        agent3.chat("写文件")
+    assert agent3.policy.auto is True
+    assert (Path(tmp) / "f.txt").read_text() == "ok"
 
 
 def test_interrupt_cleanup(tmp):
@@ -500,7 +537,7 @@ def test_tui():
 
             def later():
                 time.sleep(0.8)
-                pipe.send_text("y")
+                pipe.send_text("1")  # 菜单数字直选: 1=允许
                 time.sleep(0.8)
                 pipe.send_text("/exit\n")
 
@@ -508,7 +545,7 @@ def test_tui():
             run_app(agent, main_mod.handle_command, input=pipe, output=vt2)
         assert (Path(tmp) / "x.txt").read_text() == "data"
     screen2 = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b[>=]", "", out_buf2.getvalue())
-    assert "允许执行 write_file" in screen2 and "已允许" in screen2 and "写好了" in screen2
+    assert "write_file" in screen2 and "1. 允许" in screen2 and "已允许" in screen2 and "写好了" in screen2
 
 
 def main():
@@ -518,7 +555,7 @@ def main():
     test_llm_retry()
     test_tui()
     for fn in (test_memory_and_skills, test_agent_loop_with_tools, test_edit_file_guards, test_subagent,
-               test_reasoning_collapse, test_policy, test_interrupt_cleanup, test_env_context,
+               test_reasoning_collapse, test_policy, test_auto_review, test_interrupt_cleanup, test_env_context,
                test_usage_and_compact, test_session_persistence,
                test_parallel_readonly_tools, test_grep_and_read_offset,
                test_agents_md_and_custom_agents, test_bash_background_and_jobs, test_config):

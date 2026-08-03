@@ -30,7 +30,7 @@ _widgets_base.Border.BOTTOM_RIGHT = "╯"
 
 COMMANDS = ["/exit", "/reset", "/model", "/effort", "/cwd", "/skills", "/memory", "/todos",
             "/reasoning", "/verbose", "/output", "/compact", "/sessions", "/resume",
-            "/jobs", "/cost", "/help"]
+            "/jobs", "/cost", "/auto", "/help"]
 
 PLACEHOLDER = "输入任务, / 查看命令 · Enter 发送 · Alt+Enter 换行"
 
@@ -51,7 +51,8 @@ STYLE = Style.from_dict(
         "user": "bg:#374151 bold #34d399",
         "user.text": "bg:#374151 #e5e7eb",
         "approval": "bold #fbbf24",
-        "approval.keys": "#fbbf24",
+        "approval.option": "#d1d5db",
+        "approval.selected": "bg:#374151 bold #fbbf24",
     }
 )
 
@@ -185,9 +186,16 @@ class TranscriptUI:
     def notice(self, text):
         self.ansi(f"{C.DIM}{text}{C.RESET}")
 
+    APPROVAL_OPTIONS = (
+        ("y", "允许"),
+        ("a", "允许, 本会话不再询问同类操作"),
+        ("auto", "开启自动审核 (后续修改类操作由模型审批)"),
+        ("n", "拒绝"),
+    )
+
     def confirm(self, name, summary, depth):
-        """agent 线程阻塞等待用户按 y/n/a (按键绑定在 run_app 里)。"""
-        block = {"kind": "approval", "name": name, "summary": summary, "answer": None}
+        """agent 线程阻塞等待用户选择 (按键/鼠标绑定在 run_app 里)。"""
+        block = {"kind": "approval", "name": name, "summary": summary, "answer": None, "selected": 0}
         self.blocks.append(block)
         self._approval_event.clear()
         self.pending = block
@@ -229,10 +237,20 @@ class TranscriptUI:
                     frags += [("class:user", prefix), ("class:user.text", f" {line} "), ("", "\n")]
             elif b["kind"] == "approval":
                 if b["answer"] is None:
-                    frags.append(("class:approval", f"⚠ 允许执行 {b['name']}: {_truncate_width(b['summary'], 100)} ?"))
-                    frags.append(("class:approval.keys", "  [y 允许 / n 拒绝 / a 总是允许]\n"))
+                    frags.append(("class:approval", f"⚠ {b['name']}  {_truncate_width(b['summary'], 100)}\n"))
+                    for i, (key, label) in enumerate(self.APPROVAL_OPTIONS):
+                        def click(mouse_event, k=key):
+                            if mouse_event.event_type == MouseEventType.MOUSE_UP:
+                                self.answer_pending(k)
+                            else:
+                                return NotImplemented
+
+                        cursor = "❯" if i == b["selected"] else " "
+                        style = "class:approval.selected" if i == b["selected"] else "class:approval.option"
+                        frags.append((style, f"  {cursor} {i + 1}. {label}  ", click))
+                        frags.append(("", "\n"))
                 else:
-                    verdict = {"y": "已允许", "a": "已允许(总是)", "n": "已拒绝"}.get(b["answer"], "已拒绝")
+                    verdict = {"y": "已允许", "a": "已允许 (不再询问)", "auto": "已开启自动审核", "n": "已拒绝"}.get(b["answer"], "已拒绝")
                     frags.append(("class:dim", f"⚠ {b['name']}: {verdict}\n"))
             elif b["kind"] == "reasoning":
                 h = self._toggle(b)
@@ -284,7 +302,7 @@ class FollowPane(ScrollablePane):
 def _status_fragments(agent, running):
     effort = agent.llm.effective_effort()
     if getattr(agent.ui, "pending", None) is not None:
-        hint = "  ·  等待确认: 按 y / n / a"
+        hint = "  ·  等待选择: ↑↓+Enter / 数字键 / 点击"
     elif running[0]:
         hint = "  ·  运行中 (ctrl-c 中断)"
     else:
@@ -360,8 +378,9 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
         return handled
 
     kb = KeyBindings()
+    approval_active = Condition(lambda: ui.pending is not None)
 
-    @kb.add("enter")
+    @kb.add("enter", filter=~approval_active)
     def _(event):
         state = buf.complete_state
         if state and state.current_completion:
@@ -391,7 +410,33 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
         else:
             event.app.exit()
 
-    approval_active = Condition(lambda: ui.pending is not None)
+    # 确认菜单: ↑↓ 移动, Enter 选中, 数字直选, Esc 拒绝, 也可鼠标点击
+    def _move_selection(delta):
+        if ui.pending is not None:
+            n = len(ui.APPROVAL_OPTIONS)
+            ui.pending["selected"] = (ui.pending["selected"] + delta) % n
+            ui.on_change()
+
+    @kb.add("up", filter=approval_active)
+    def _(event):
+        _move_selection(-1)
+
+    @kb.add("down", filter=approval_active)
+    def _(event):
+        _move_selection(1)
+
+    @kb.add("enter", filter=approval_active)
+    def _(event):
+        ui.answer_pending(ui.APPROVAL_OPTIONS[ui.pending["selected"]][0])
+
+    @kb.add("escape", filter=approval_active, eager=True)
+    def _(event):
+        ui.answer_pending("n")
+
+    for _i in range(len(TranscriptUI.APPROVAL_OPTIONS)):
+        @kb.add(str(_i + 1), filter=approval_active)
+        def _(event, _i=_i):
+            ui.answer_pending(ui.APPROVAL_OPTIONS[_i][0])
 
     @kb.add("y", filter=approval_active)
     def _(event):
@@ -400,10 +445,6 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
     @kb.add("n", filter=approval_active)
     def _(event):
         ui.answer_pending("n")
-
-    @kb.add("a", filter=approval_active)
-    def _(event):
-        ui.answer_pending("a")
 
     @kb.add("c-d", filter=Condition(lambda: not buf.text))
     def _(event):

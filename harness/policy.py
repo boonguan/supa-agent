@@ -15,8 +15,9 @@ _SHELL_META = (";", "&&", "||", "|", ">", "<", "`", "$(")
 
 
 class Policy:
-    def __init__(self, yolo=False, extra_prefixes=()):
+    def __init__(self, yolo=False, extra_prefixes=(), auto=False):
         self.yolo = yolo
+        self.auto = auto  # 自动审核: 修改类操作交给模型审批, DENY 才升级人工
         self.extra_prefixes = tuple(extra_prefixes)  # 配置文件 bash_allow 追加的白名单前缀
         self.session_allowed = set()  # "工具名" 或 "bash:首词" (用户答 a 后记住)
 
