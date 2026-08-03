@@ -502,6 +502,27 @@ def test_tui():
     assert "line2" in text and "line3" in text
     assert "已思考 (7 tokens)" in text
 
+    # tab 展开为空格 (否则渲染成 ^I); 点击展开走 on_redraw 而非 on_change (不跳底部)
+    ui2 = TranscriptUI()
+    ui2.tool_call("bash", "cat", 0)
+    ui2.tool_result("bash", "a\tb", 0)
+    ui2.blocks[-1]["expanded"] = True
+    assert "\t" not in "".join(f[1] for f in ui2.fragments())
+    ui2.on_content("有\t制表符\n", 0)
+    ui2.end_content(0)
+    assert "\t" not in ui2.blocks[-1]["ansi"]
+
+    from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
+    from prompt_toolkit.data_structures import Point
+
+    calls = {"change": 0, "redraw": 0}
+    ui2.on_change = lambda: calls.__setitem__("change", calls["change"] + 1)
+    ui2.on_redraw = lambda: calls.__setitem__("redraw", calls["redraw"] + 1)
+    handler = ui2._toggle(ui2.blocks[0])
+    handler(MouseEvent(position=Point(0, 0), event_type=MouseEventType.MOUSE_UP,
+                       button=None, modifiers=frozenset()))
+    assert calls == {"change": 0, "redraw": 1}
+
     # 全屏 app 真实渲染: 内容必须出现在屏幕上 (回归: FollowPane 滚动钳制)
     import re
     import tempfile

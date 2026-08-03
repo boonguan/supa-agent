@@ -102,7 +102,8 @@ class TranscriptUI:
         self._reasoning = None
         self._pending_tools = []  # FIFO: 并行执行时 tool_result 按序回填
         self._ansi_cache = {}  # id(text_block) -> (len, fragments)
-        self.on_change = lambda: None
+        self.on_change = lambda: None  # 新内容产生: 重绘并跟随底部
+        self.on_redraw = lambda: None  # 仅重绘 (展开/折叠等), 不动滚动位置
 
     # --- 写入 ---
 
@@ -110,7 +111,7 @@ class TranscriptUI:
         if self._text_block is None:
             self._text_block = {"kind": "text", "ansi": ""}
             self.blocks.append(self._text_block)
-        self._text_block["ansi"] += line + "\n"
+        self._text_block["ansi"] += line.expandtabs(4) + "\n"  # \t 会被渲染成 ^I
         self.on_change()
 
     def ansi(self, text):
@@ -216,7 +217,7 @@ class TranscriptUI:
         def handler(mouse_event):
             if mouse_event.event_type == MouseEventType.MOUSE_UP:
                 block["expanded"] = not block["expanded"]
-                self.on_change()
+                self.on_redraw()  # 用户在阅读, 不要跳到底部
             else:
                 return NotImplemented
 
@@ -258,7 +259,7 @@ class TranscriptUI:
                 frags.append(("class:dim", f"{arrow} {b['label']}\n", h))
                 if b["expanded"]:
                     for line in b["text"].splitlines():
-                        frags.append(("class:dim", f"  {line}\n"))
+                        frags.append(("class:dim", f"  {line.expandtabs(4)}\n"))
             elif b["kind"] == "tool":
                 h = self._toggle(b)
                 indent = "  " * b["depth"]
@@ -269,7 +270,7 @@ class TranscriptUI:
                     ("class:tool.name", b["name"] + " ", h),
                     ("class:dim", _truncate_width(b["summary"], 120) + "\n", h),
                 ]
-                lines = b["result"].splitlines() or [""]
+                lines = [ln.expandtabs(4) for ln in b["result"].splitlines()] or [""]
                 if b["expanded"]:
                     for line in lines:
                         frags.append(("class:dim", f"{indent}    │ {line}\n"))
@@ -498,5 +499,7 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
         output=output,
     )
     ui.on_change = lambda: (follow_bottom(), app.invalidate())
+    # 展开/折叠时停止跟随底部, 保持阅读位置; 新内容到来时 on_change 恢复跟随
+    ui.on_redraw = lambda: (setattr(pane, "follow", False), app.invalidate())
     follow_bottom()
     app.run()
