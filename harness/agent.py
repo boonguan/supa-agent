@@ -1,9 +1,14 @@
 import json
 
+from . import session
 from .context import build_system_prompt
 from .policy import Policy
 from .tools import TOOLS
 from .ui import ConsoleUI
+
+COMPACT_THRESHOLD = 0.7  # 上下文占比超过即自动压缩
+PRUNE_THRESHOLD = 0.5  # 超过即裁剪旧工具输出
+PRUNE_KEEP_RECENT = 16  # 最近 N 条消息不裁剪
 
 
 class _ToolAccumulator:
@@ -74,6 +79,9 @@ class Agent:
         self.todos = []
         self.tool_log = []  # (name, summary, result), /output 回看
         self.abort = False  # TUI ctrl-c 置位, 流式循环检测后中断
+        self.last_usage = None  # 上一轮请求的 usage
+        self.total_usage = {}  # 本会话累计 token
+        self.session_id = session.new_id() if depth == 0 else None
         self.messages = [{"role": "system", "content": build_system_prompt(llm.model, cwd)}]
 
     def set_model(self, name):
@@ -140,7 +148,66 @@ class Agent:
         if reasoning and not content:
             self.ui.end_reasoning(self._reason_label(reasoning, usage), "".join(reasoning), self.depth)
         self.ui.end_content(self.depth)
+        self._record_usage(usage)
         return "".join(content), "".join(reasoning), accumulator.to_calls()
+
+    def _record_usage(self, usage):
+        if not usage:
+            return
+        self.last_usage = usage
+        t = self.total_usage
+        for k in ("prompt_tokens", "completion_tokens"):
+            t[k] = t.get(k, 0) + (usage.get(k) or 0)
+        rt = (usage.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0
+        t["reasoning_tokens"] = t.get("reasoning_tokens", 0) + rt
+        t["requests"] = t.get("requests", 0) + 1
+
+    def context_used(self):
+        """上一轮请求占上下文窗口的比例 (0~1)。"""
+        if not self.last_usage:
+            return 0.0
+        used = (self.last_usage.get("prompt_tokens") or 0) + (self.last_usage.get("completion_tokens") or 0)
+        return used / self.llm.context_window()
+
+    PRUNE_MARK = "\n...(旧工具输出已裁剪)"
+
+    def _prune_old_tool_results(self):
+        """裁剪早期轮次的大段工具输出, 便宜地释放上下文。"""
+        for m in self.messages[:-PRUNE_KEEP_RECENT]:
+            content = m.get("content") or ""
+            if m["role"] == "tool" and len(content) > 400 and not content.endswith(self.PRUNE_MARK):
+                m["content"] = content[:200] + self.PRUNE_MARK
+
+    def compact(self):
+        """把较早的对话轮次总结成一条摘要消息, 保留当前轮完整。返回是否执行了压缩。"""
+        user_idxs = [
+            i for i, m in enumerate(self.messages)
+            if m["role"] == "user" and not (m.get("content") or "").startswith("(历史摘要)")
+        ]
+        if len(user_idxs) < 2:
+            return False  # 只有一轮, 无可压缩
+        cut = user_idxs[-1]
+        lines = []
+        for m in self.messages[1:cut]:
+            text = m.get("content") or ""
+            if m.get("tool_calls"):
+                text += " | 调用: " + ", ".join(c["function"]["name"] for c in m["tool_calls"])
+            lines.append(f"[{m['role']}] {text[:2000]}")
+        transcript = "\n".join(lines)[-30000:]
+        resp = self.llm.chat([
+            {
+                "role": "user",
+                "content": "把下面的对话历史压缩成简洁摘要, 必须保留: 用户目标与约束、已修改的文件清单、"
+                           "关键决定、未完成事项。直接输出摘要:\n\n" + transcript,
+            }
+        ])
+        summary = resp["choices"][0]["message"]["content"]
+        self.messages[1:cut] = [
+            {"role": "user", "content": "(历史摘要) 之前对话的压缩记录:\n" + summary},
+            {"role": "assistant", "content": "已了解之前的进展, 继续。"},
+        ]
+        self.last_usage = None  # 旧计数已失效
+        return True
 
     def _assistant_message(self, content, reasoning, tool_calls=None):
         msg = {"role": "assistant", "content": content or None}
@@ -173,6 +240,9 @@ class Agent:
         except KeyboardInterrupt:
             self._interrupt_cleanup()
             raise
+        finally:
+            if self.depth == 0:
+                session.save(self)
 
     def _chat(self, task):
         self.abort = False
@@ -217,6 +287,15 @@ class Agent:
                 self.messages.append(
                     {"role": "tool", "tool_call_id": call["id"], "content": result}
                 )
+            if self.context_used() > PRUNE_THRESHOLD:
+                self._prune_old_tool_results()
+            if self.context_used() > COMPACT_THRESHOLD:
+                self.ui.notice("上下文接近上限, 自动压缩历史…")
+                try:
+                    if self.compact():
+                        self.ui.notice("历史已压缩")
+                except Exception as e:
+                    self.ui.notice(f"压缩失败: {type(e).__name__}: {e}")
         self.ui.notice("已达到最大步数, 任务未完成")
         return ""
 

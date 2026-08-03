@@ -6,8 +6,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from harness import session as session_mod
 from harness.agent import Agent
 from harness.policy import Policy
+
+# 测试期间会话落盘到临时目录, 不污染 ~/.supa
+_session_tmp = tempfile.TemporaryDirectory()
+session_mod.SESSIONS_DIR = Path(_session_tmp.name)
 from harness.context import append_memory, build_system_prompt, discover_skills, load_memory
 from harness.tools import TOOLS
 
@@ -23,6 +28,12 @@ class FakeLLM:
 
     def effective_effort(self):
         return self.effort
+
+    def context_window(self):
+        return 128_000
+
+    def chat(self, messages, tools=None):  # compact 用的非流式接口
+        return {"choices": [{"message": {"content": "摘要: 用户在改文件, 已改 a.txt"}}]}
 
     def chat_stream(self, messages, tools=None):
         self.last_tools = tools
@@ -245,6 +256,57 @@ def test_env_context(tmp):
     assert "分支 main" in prompt
 
 
+def test_usage_and_compact(tmp):
+    import contextlib
+    import io
+
+    llm = FakeLLM([("第一轮回复", None), ("第二轮回复", None), ("第三轮回复", None)])
+    agent = Agent(llm, cwd=tmp)
+    with contextlib.redirect_stdout(io.StringIO()):
+        agent.chat("任务一")
+        agent.chat("任务二")
+        agent.chat("任务三")
+    # usage 累计 (FakeLLM 每轮 usage 只有 reasoning_tokens=7)
+    assert agent.total_usage["requests"] == 3
+    assert agent.total_usage["reasoning_tokens"] == 21
+    # compact: 前两轮被摘要替换, 当前轮保留
+    n_before = len(agent.messages)
+    assert agent.compact() is True
+    assert any("(历史摘要)" in (m.get("content") or "") for m in agent.messages)
+    assert agent.messages[-1]["content"] == "第三轮回复"  # 当前轮完整保留
+    assert len(agent.messages) < n_before
+    # 只剩一轮时不可再压
+    assert agent.compact() is False
+
+    # 旧工具输出裁剪
+    agent2 = Agent(FakeLLM([]), cwd=tmp)
+    agent2.messages += [{"role": "user", "content": "x"}]
+    agent2.messages += [{"role": "tool", "tool_call_id": f"c{i}", "content": "y" * 1000} for i in range(20)]
+    agent2._prune_old_tool_results()
+    old, recent = agent2.messages[2], agent2.messages[-1]
+    assert old["content"].endswith("(旧工具输出已裁剪)") and len(old["content"]) < 300
+    assert len(recent["content"]) == 1000  # 最近的不动
+
+
+def test_session_persistence(tmp):
+    import contextlib
+    import io
+
+    llm = FakeLLM([("好", None)])
+    agent = Agent(llm, cwd=tmp)
+    agent.todos = [{"content": "todo1", "status": "pending"}]
+    with contextlib.redirect_stdout(io.StringIO()):
+        agent.chat("记住这个")  # chat 结束自动落盘
+    sessions = session_mod.list_sessions()
+    assert sessions and sessions[0]["preview"].startswith("记住这个")
+
+    agent2 = Agent(FakeLLM([]), cwd="/")
+    session_mod.load(agent2, agent.session_id)
+    assert agent2.messages == agent.messages
+    assert agent2.todos[0]["content"] == "todo1"
+    assert agent2.cwd == tmp  # cwd 一并恢复
+
+
 def test_effort_per_model():
     from harness.llm import LLM, supported_efforts
 
@@ -354,7 +416,8 @@ def main():
     test_llm_retry()
     test_tui()
     for fn in (test_memory_and_skills, test_agent_loop_with_tools, test_edit_file_guards, test_subagent,
-               test_reasoning_collapse, test_policy, test_interrupt_cleanup, test_env_context):
+               test_reasoning_collapse, test_policy, test_interrupt_cleanup, test_env_context,
+               test_usage_and_compact, test_session_persistence):
         with tempfile.TemporaryDirectory() as tmp:
             fn(tmp)
     print("所有测试通过")

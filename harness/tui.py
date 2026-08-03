@@ -28,7 +28,8 @@ _widgets_base.Border.TOP_RIGHT = "╮"
 _widgets_base.Border.BOTTOM_LEFT = "╰"
 _widgets_base.Border.BOTTOM_RIGHT = "╯"
 
-COMMANDS = ["/exit", "/reset", "/model", "/effort", "/cwd", "/skills", "/memory", "/todos", "/reasoning", "/verbose", "/output", "/help"]
+COMMANDS = ["/exit", "/reset", "/model", "/effort", "/cwd", "/skills", "/memory", "/todos",
+            "/reasoning", "/verbose", "/output", "/compact", "/sessions", "/resume", "/help"]
 
 PLACEHOLDER = "输入任务, / 查看命令 · Enter 发送 · Alt+Enter 换行"
 
@@ -282,14 +283,19 @@ def _status_fragments(agent, running):
         hint = "  ·  运行中 (ctrl-c 中断)"
     else:
         hint = "  ·  点击 ▸ 展开 · PgUp/PgDn 滚动"
-    return [
+    frags = [
         ("class:status.model", f" {agent.llm.model}"),
         ("class:status", "  ·  "),
         ("class:status.effort", f"effort: {effort or '不支持'}"),
         ("class:status", "  ·  "),
         ("class:status.cwd", agent.cwd),
-        ("class:status", hint),
     ]
+    used = agent.context_used()
+    if used > 0:
+        color = "class:status.effort" if used > 0.6 else "class:status"
+        frags += [("class:status", "  ·  "), (color, f"ctx {used:.0%}")]
+    frags.append(("class:status", hint))
+    return frags
 
 
 def run_app(agent, handle_command, banner="", input=None, output=None):

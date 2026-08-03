@@ -22,6 +22,15 @@ EFFORT_RULES = (
 
 _ORDER = ("none", "low", "medium", "high", "max")
 
+# 上下文窗口 (前缀匹配), 未知模型保守取 64k
+CONTEXT_WINDOWS = (
+    ("deepseek", 128_000),
+    ("gpt-5", 400_000),
+    ("o3", 200_000),
+    ("o4", 200_000),
+)
+DEFAULT_CONTEXT_WINDOW = 64_000
+
 
 def supported_efforts(model):
     for prefix, efforts in EFFORT_RULES:
@@ -80,6 +89,12 @@ class LLM:
                     time.sleep(2 ** attempt)
                     continue
                 raise LLMError(f"网络错误: {e.reason}") from e
+
+    def context_window(self):
+        for prefix, window in CONTEXT_WINDOWS:
+            if self.model.startswith(prefix):
+                return window
+        return DEFAULT_CONTEXT_WINDOW
 
     def effective_effort(self):
         """当前模型实际生效的推理强度: 不支持返回 None, 不在档位表时就近向上取 (如 medium -> high)。"""

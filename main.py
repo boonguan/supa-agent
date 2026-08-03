@@ -9,6 +9,8 @@ from harness.agent import Agent
 from harness.context import discover_skills, load_memory
 from harness.llm import LLM, LLMError, SUPPORTED_MODELS, supported_efforts
 from harness.policy import Policy
+from harness.session import list_sessions
+from harness.session import load as load_session
 from harness.ui import C, print_todos
 
 try:
@@ -30,6 +32,9 @@ HELP = """命令:
   /reasoning        展开/折叠思维链显示 (默认折叠为进度行)
   /verbose          切换工具结果显示: 折叠单行 (默认) / 多行预览
   /output [n]       查看倒数第 n 条工具调用的完整输出 (默认最近一条)
+  /compact          手动压缩对话历史 (上下文超 70% 会自动压缩)
+  /sessions         列出最近保存的会话
+  /resume [id]      恢复会话 (默认最近一个), 也可启动时 supa --resume
   /help             显示帮助
 其余输入都会作为任务发给 agent"""
 
@@ -91,6 +96,33 @@ def handle_command(agent, line):
             print_todos(agent.todos)
         else:
             print("当前没有任务清单")
+    elif line == "/compact":
+        try:
+            if agent.compact():
+                print(f"{C.GREEN}历史已压缩, 当前 {len(agent.messages)} 条消息{C.RESET}")
+            else:
+                print("对话不足两轮, 无可压缩")
+        except LLMError as e:
+            print(f"{C.YELLOW}压缩失败: {e}{C.RESET}")
+    elif line == "/sessions":
+        sessions = list_sessions()
+        if not sessions:
+            print("没有保存的会话")
+        for s in sessions:
+            print(f"  {C.GREEN}{s['id']}{C.RESET}  {C.DIM}{s['cwd']}{C.RESET}  {s['preview']}")
+    elif line == "/resume" or line.startswith("/resume "):
+        sid = line[8:].strip()
+        sessions = list_sessions()
+        if not sid:
+            if not sessions:
+                print("没有保存的会话")
+                return True
+            sid = sessions[0]["id"]
+        try:
+            load_session(agent, sid)
+            print(f"{C.GREEN}已恢复会话 {sid} ({len(agent.messages)} 条消息, cwd: {agent.cwd}){C.RESET}")
+        except (OSError, ValueError) as e:
+            print(f"恢复失败: {e}")
     elif line == "/reasoning":
         agent.ui.show_reasoning = not agent.ui.show_reasoning
         print(f"思维链显示: {'展开' if agent.ui.show_reasoning else '折叠'}")
@@ -164,6 +196,8 @@ def main():
     ap.add_argument("--model", default=None, help="模型名, 默认取 LLM_MODEL")
     ap.add_argument("--effort", default=None, help="推理强度, 默认取 LLM_EFFORT")
     ap.add_argument("--yolo", action="store_true", help="跳过所有权限确认 (危险, 适合沙箱/CI)")
+    ap.add_argument("--resume", nargs="?", const="latest", default=None, metavar="ID",
+                    help="恢复会话 (不带 ID 则恢复最近一个)")
     args = ap.parse_args()
 
     try:
@@ -176,6 +210,18 @@ def main():
         sys.exit(1)
 
     agent = Agent(llm, cwd=str(Path(args.dir).resolve()), policy=Policy(yolo=args.yolo))
+    if args.resume:
+        sessions = list_sessions()
+        sid = sessions[0]["id"] if args.resume == "latest" and sessions else args.resume
+        if sid == "latest":
+            print("没有保存的会话", file=sys.stderr)
+            sys.exit(1)
+        try:
+            load_session(agent, sid)
+            print(f"已恢复会话 {sid} ({len(agent.messages)} 条消息)")
+        except (OSError, ValueError) as e:
+            print(f"恢复失败: {e}", file=sys.stderr)
+            sys.exit(1)
     if args.task:
         try:
             agent.run(" ".join(args.task))
