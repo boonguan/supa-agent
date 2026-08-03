@@ -180,9 +180,10 @@ def test_effort_per_model():
 
 
 def test_tui():
+    import io
+
     try:
         from prompt_toolkit.input import create_pipe_input
-        from prompt_toolkit.output import DummyOutput
 
         from harness.tui import TranscriptUI, run_app
     except ImportError:
@@ -207,17 +208,29 @@ def test_tui():
     assert "line2" in text and "line3" in text
     assert "已思考 (7 tokens)" in text
 
-    # 全屏 app: 发 /exit 能干净退出
+    # 全屏 app 真实渲染: 内容必须出现在屏幕上 (回归: FollowPane 滚动钳制)
+    import re
     import tempfile
+    import threading
+    import time
 
+    from prompt_toolkit.data_structures import Size
+    from prompt_toolkit.output.vt100 import Vt100_Output
+
+    import main as main_mod
+
+    out_buf = io.StringIO()
+    vt = Vt100_Output(out_buf, lambda: Size(rows=30, columns=80))
     with tempfile.TemporaryDirectory() as tmp:
-        import main as main_mod
-
-        agent = Agent(FakeLLM([]), cwd=tmp, ui=TranscriptUI())
+        llm = FakeLLM([("", [("bash", {"command": "echo hi"})]), ("**完成**了", None)])
+        agent = Agent(llm, cwd=tmp, ui=TranscriptUI())
         with create_pipe_input() as pipe:
-            pipe.send_text("/help\n/exit\n")
-            run_app(agent, main_mod.handle_command, banner="hi", input=pipe, output=DummyOutput())
-        assert any(b["kind"] == "user" and b["text"] == "/help" for b in agent.ui.blocks)
+            pipe.send_text("跑个命令\n")
+            threading.Thread(target=lambda: (time.sleep(1.0), pipe.send_text("/exit\n")), daemon=True).start()
+            run_app(agent, main_mod.handle_command, banner="supa-banner", input=pipe, output=vt)
+    screen = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b[>=]", "", out_buf.getvalue())
+    for s in ("supa-banner", "跑个命令", "bash", "完成", "已思考"):
+        assert s in screen, f"屏幕上看不到: {s}"
 
 
 def main():

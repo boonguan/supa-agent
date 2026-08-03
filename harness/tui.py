@@ -223,6 +223,26 @@ class TranscriptUI:
         return frags
 
 
+class FollowPane(ScrollablePane):
+    """ScrollablePane 只在焦点位于 pane 内部时钳制滚动; 这里焦点永远在输入框,
+    所以每次渲染自己钳制, 并支持跟随底部。"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.follow = True
+        self.max_scroll = 0
+
+    def write_to_screen(self, screen, mouse_handlers, write_position, parent_style, erase_bg, z_index):
+        virtual_width = write_position.width - (1 if self.show_scrollbar() else 0)
+        virtual_height = self.content.preferred_height(virtual_width, self.max_available_height).preferred
+        self.max_scroll = max(0, min(virtual_height, self.max_available_height) - write_position.height)
+        if self.follow:
+            self.vertical_scroll = self.max_scroll
+        else:
+            self.vertical_scroll = max(0, min(self.vertical_scroll, self.max_scroll))
+        super().write_to_screen(screen, mouse_handlers, write_position, parent_style, erase_bg, z_index)
+
+
 def _status_fragments(agent, running):
     effort = agent.llm.effective_effort()
     return [
@@ -242,10 +262,10 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
     history = InMemoryHistory()
 
     transcript = Window(FormattedTextControl(ui.fragments, focusable=False), wrap_lines=True)
-    pane = ScrollablePane(transcript, show_scrollbar=True)
+    pane = FollowPane(transcript, show_scrollbar=True)
 
     def follow_bottom():
-        pane.vertical_scroll = 10 ** 8  # 渲染时被钳到底部
+        pane.follow = True
 
     if banner:
         ui.ansi(banner)
@@ -325,11 +345,14 @@ def run_app(agent, handle_command, banner="", input=None, output=None):
 
     @kb.add("pageup")
     def _(event):
+        pane.follow = False
         pane.vertical_scroll = max(0, pane.vertical_scroll - 10)
 
     @kb.add("pagedown")
     def _(event):
         pane.vertical_scroll += 10
+        if pane.vertical_scroll >= pane.max_scroll:
+            pane.follow = True  # 滚回底部后恢复跟随
 
     control = BufferControl(
         buffer=buf,
